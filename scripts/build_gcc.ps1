@@ -1,5 +1,7 @@
 param(
-    [string]$CubeFwRoot = (Join-Path $env:USERPROFILE 'STM32Cube/Repository/STM32Cube_FW_H5_V1.6.0')
+    [string]$CubeFwRoot = (Join-Path $env:USERPROFILE 'STM32Cube/Repository/STM32Cube_FW_H5_V1.6.0'),
+    [ValidateSet('led_direct', 'pulse_distributor')]
+    [string]$Example = 'led_direct'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,8 +11,10 @@ $projectFile = Join-Path $projectDir 'H503_Peripheral_DBGer.uvprojx'
 $template = Join-Path $CubeFwRoot 'Projects/NUCLEO-H503RB/Templates/STM32CubeIDE'
 $startup = Join-Path $template 'Example/Startup/startup_stm32h503rbtx.s'
 $linker = Join-Path $template 'STM32H503RBTX_FLASH.ld'
-$elf = Join-Path $repo 'tmp/H503_TPLD_PA1_to_PA0.elf'
-$hex = Join-Path $repo 'firmware/H503_TPLD_PA1_to_PA0.hex'
+$name = "H503_TPLD_${Example}_10Hz"
+$elf = Join-Path $repo "tmp/$name.elf"
+$hex = Join-Path $repo "firmware/$name.hex"
+$exampleDefine = if ($Example -eq 'pulse_distributor') { @('-DTPLD_PULSE_DISTRIBUTOR') } else { @() }
 
 foreach ($path in @($projectFile, $startup, $linker)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Missing build input: $path" }
@@ -33,7 +37,7 @@ $includeDirs = @(
 
 New-Item -ItemType Directory -Force (Split-Path $elf), (Split-Path $hex) | Out-Null
 & arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -mfloat-abi=soft -Os -g3 `
-    -ffunction-sections -fdata-sections -DSTM32H503xx -DUSE_HAL_DRIVER `
+    -ffunction-sections -fdata-sections -DSTM32H503xx -DUSE_HAL_DRIVER $exampleDefine `
     $includeDirs '-Wl,--gc-sections' '-specs=nosys.specs' '-T' $linker `
     $startup $sources -o $elf
 if ($LASTEXITCODE -ne 0) { throw 'GCC link failed' }

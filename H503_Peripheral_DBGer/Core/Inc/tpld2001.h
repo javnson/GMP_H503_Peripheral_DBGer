@@ -11,7 +11,7 @@ typedef enum {
   TPLD_WRITE_FAILED,
   TPLD_VERIFY_FAILED,
   TPLD_ACTIVATE_FAILED,
-  TPLD_ALREADY_ACTIVE
+  TPLD_PWM_FAILED
 } TPLD_Status;
 
 /* Loads a volatile configuration using PB5 (SDA) and PB6 (SCL).

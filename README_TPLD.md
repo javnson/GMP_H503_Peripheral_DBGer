@@ -1,29 +1,37 @@
-# H503 板载 TPLD2001 直通验证
+# H503 + TPLD2001：IO12 输入 10 Hz 方波
 
-当前固件在 H503 上运行时，通过软件 I²C 将 `cpld/pa1_to_pa0/program.hex` 的 512 字节配置加载到 TPLD2001 的配置寄存器，逐字节回读，再验证 PA1 → TPLD IO11 → TPLD IO12 → PA0。上电后自动执行，无需上位机命令。
+另见 [六拍脉冲分配器例程](cpld/pulse_distributor/README.md)：同样使用 PA0 的 10 Hz 时钟，输出 A/B/C 三路相位并由板上按键控制方向。
+
+固件上电后用 PB5/PB6 软件 I²C 将 `cpld/led_direct/program.hex` 的 512 字节配置加载到板载 TPLD2001，并逐字节回读验证。加载成功后，H503 的 TIM2 CH1 从 PA0 输出 10 Hz、50% 占空比方波，送入 TPLD IO12。`led_direct` 工程将 IO12 直通到 IO11；H503 从 PA1 采样回读，同时该工程还驱动板上的 RGB LED 逻辑。
 
 ## 硬件连接
 
-- J11 的 1–2 跳帽连接 PB6 / SCL 与 TPLD IO6；3–4 跳帽连接 PB5 / SDA 与 TPLD IO7。I²C 上拉跳帽需要接通。
-- H503 的 PB5 在芯片数据手册中只有 `I2C1_SMBA`，并非 `I2C1_SDA`。因此固件使用 PB5/PB6 开漏 GPIO 实现软件 I²C，**不要在此板上调用 `MX_I2C1_Init()` 来访问 TPLD**。
-- PA1 接 TPLD IO11，PA0 接 IO12。当前 CPLD 镜像让 IO11 为输入、IO12 为输出。
+- PA0 连接 TPLD IO12（输入），PA1 连接 TPLD IO11（输出）。
+- PA0 还连接 SW2、5.1 kΩ 上拉和 100 nF 电容。10 Hz TIM2 输出采用开漏模式；SW2 会拉低时钟线，不是方向键。脉冲分配器的方向键为 SW3。
+- J11 跳帽连接 PB6 与 TPLD IO6/SCL、PB5 与 TPLD IO7/SDA；I²C 上拉跳帽也需接通。
+- H503 的 PB5 复用功能是 `I2C1_SMBA`，因此这里使用开漏 GPIO 模拟 I²C，而不调用 `MX_I2C1_Init()`。
 
-## 构建与观察
+## 构建和下载
 
-- Keil 工程：`H503_Peripheral_DBGer/MDK-ARM/H503_Peripheral_DBGer.uvprojx`。
-- 无 Keil 编译器许可证时，可运行 `pwsh scripts/build_gcc.ps1`。该脚本使用 STM32Cube FW_H5 V1.6.0 自带的 H503 GCC 启动文件/链接脚本；工程的 `Drivers/` 由 CubeMX 从同一固件包生成，不纳入 Git。
-- 已验证的 H503 固件：`firmware/H503_TPLD_PA1_to_PA0.hex`，可通过 J-Link 写入 STM32H503CB。
-- 调试器观察 `tpld_status`：`0` 表示本次加载和回读成功；`7` 表示仅 MCU 复位而 TPLD 配置仍在，直通验证成功；其他值见 `Core/Inc/tpld2001.h`。
-- `tpld_i2c_address` 是检测到的 7 位地址；`tpld_loopback_ok` 为最近一次高低电平检查结果；`tpld_loopback_passes` 与 `tpld_loopback_failures` 为累计次数。
+1. 在 TI InterConnect Studio 中打开 `cpld/led_direct/led_test.syscfg`，修改设计后生成 `cpld/led_direct/program.hex`。仓库中的 `program.hex` 已对应当前 `led_direct` 设计。
+2. 在仓库根目录运行 `python scripts/generate_tpld_image.py`，更新 `H503_Peripheral_DBGer/Core/Inc/tpld2001_image.h`。脚本检查配置地址 `0x200` 至 `0x3FF` 的全部 512 字节及 HEX 校验和。
+3. 在 Keil 打开 `H503_Peripheral_DBGer/MDK-ARM/H503_Peripheral_DBGer.uvprojx` 构建，或使用 PowerShell 运行 `scripts/build_gcc.ps1`。GCC 脚本需要 `arm-none-eabi-gcc` 和本地 STM32Cube FW_H5 V1.6.0；CubeMX 生成的 `Drivers/` 不纳入 Git。
+4. 将 `firmware/H503_TPLD_led_direct_10Hz.hex` 下载到 STM32H503CB。**更新 TPLD 镜像后需让整板 3.3 V 完全断电再上电**，因为仅复位 MCU 不会清除 TPLD 当前的易失性配置；当前设计激活后不再响应配置 I²C。
 
-在本板实测，空白器件地址为 `0x79`，首次加载返回 `tpld_status=0`，直通检查连续通过。仅复位 MCU 后返回 `tpld_status=7`，直通仍通过。
+原先 `cpld/pa1_to_pa0/program.hex` 的镜像仍可用 `python scripts/generate_tpld_image.py cpld/pa1_to_pa0/program.hex` 转换，但随后需重新构建固件；`firmware/H503_TPLD_PA1_to_PA0.hex` 是此前版本。
 
-## 重新生成 CPLD 镜像
+## 运行状态
 
-在 TI InterConnect Studio 1.8.0 中打开 `cpld/pa1_to_pa0/pa1_to_pa0.syscfg` 并生成 `program.hex`。随后运行 `python cpld/pa1_to_pa0/generate_image.py`，更新嵌入固件的 `Core/Inc/tpld2001_image.h`。转换脚本检查 0x200–0x3FF 共 512 字节及 TI 工具生成的校验和格式。
+调试器可观察下列全局变量：
 
-## 永久烧录的硬件条件
+- `tpld_status == 0`：TPLD 配置写入、回读及激活成功，TIM2 方波已启动；错误值定义见 `Core/Inc/tpld2001.h`。`1` 常表示 MCU 单独复位后，已激活的 TPLD 不再响应 I²C；`7` 表示 PWM 初始化失败。
+- `tpld_i2c_address`：检测到的 TPLD 7 位 I²C 地址。本板空白器件实测为 `0x79`。
+- `tpld_loopback_passes` 和 `tpld_loopback_failures`：在 PWM 高、低电平中段采样 PA1 的累计通过和失败次数。`tpld_loopback_ok` 是最近一次采样结果。
 
-本固件执行的是**易失性配置加载**，掉电后 TPLD 恢复原有 OTP 内容。TI 对 TPLD2001 的 OTP 烧录要求先在 GPI 引脚施加 7.5–8 V 的 VPP，再发出烧录命令。当前原理图的 GPI 没有由 H503 控制的 VPP 电源/开关，只有按键和 3.3 V 上拉，因此仅靠现有 H503 与跳帽无法安全完成永久 OTP 烧录。本工程不会发出 OTP 烧录命令。
+TIM2 输入时钟为 250 MHz，预分频寄存器值 `24999`、自动重装值 `999`、比较值 `500`，对应 `250 MHz / 25000 / 1000 = 10 Hz` 和 50% 占空比。只有配置加载成功才将 PA0 切为 TIM2 输出；加载失败时 PA0/PA1 保持输入模式。
 
-原 `.ioc` 是全外设规划文件；当前验证固件只初始化 GPIO，并在 `main.c` 中配置本验证用引脚。重新用 CubeMX 生成代码时，应保留这段用户代码及软件 I²C 驱动，并核对 PB5 的复用功能。
+## 烧录范围
+
+此固件执行**易失性配置加载**。TPLD 掉电后恢复原有 OTP 内容，重新上电时由 H503 再次加载配置。TPLD2001 的永久 OTP 烧录需要在 GPI 提供 7.5–8 V VPP；现有板上没有受 H503 控制的 VPP 电路，因此本工程不执行永久 OTP 烧录。
+
+原 `.ioc` 是全外设规划文件；当前固件只初始化本功能需要的 GPIO 和 TIM2。若重新用 CubeMX 生成代码，应保留 `main.c` 的用户代码、TPLD 驱动，并核对 PB5 复用功能。

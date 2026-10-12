@@ -1,0 +1,93 @@
+/**
+ * @cliArgs --device "TPLD2001" --package "DGS (VSSOP, 20)" --product "TPLD@1.8.0+1529"
+ * @versions {"tool":"1.28.0+4713"}
+ */
+
+// A, B, C form a six-state ring: 100 -> 110 -> 010 -> 011 -> 001 -> 101.
+// X = 1 advances; X = 0 walks the same ring in reverse.
+// The GPIO outputs are active high. The three board LEDs are active low.
+const PIN = scripting.addModule("/ti/tpld/PIN", {}, false);
+const CP = PIN.addInstance({$name: "CP_10Hz"});
+CP.hw.$assign = "IO12";
+CP.in_ctl = 1;
+const X = PIN.addInstance({$name: "X_direction"});
+X.hw.$assign = "IN0";
+X.in_ctl = 1;
+
+const QA = PIN.addInstance({$name: "A_PA1", type: "DOUT"});
+QA.hw.$assign = "IO11";
+const QB = PIN.addInstance({$name: "B_DAC1", type: "DOUT"});
+QB.hw.$assign = "IO10";
+const QC = PIN.addInstance({$name: "C_DAC2", type: "DOUT"});
+QC.hw.$assign = "IO9";
+const LED_A = PIN.addInstance({$name: "A_LED3", type: "DOUT"});
+LED_A.hw.$assign = "IO4";
+const LED_B = PIN.addInstance({$name: "B_LED4", type: "DOUT"});
+LED_B.hw.$assign = "IO5";
+const LED_C = PIN.addInstance({$name: "C_LED5", type: "DOUT"});
+LED_C.hw.$assign = "IO8";
+
+const DFF = scripting.addModule("/ti/tpld/DFF", {}, false);
+const A = DFF.addInstance({$name: "phase_A", init_pol: 1});
+const B = DFF.addInstance({$name: "phase_B"});
+const C = DFF.addInstance({$name: "phase_C"});
+
+const LUT = scripting.addModule("/ti/tpld/LUT", {}, false);
+const nextA = LUT.addInstance({$name: "next_A", inputs: 3,
+    function: "Equation", cfg: "(A & !B) | (!A & !C)"});
+const nextB = LUT.addInstance({$name: "next_B", inputs: 3,
+    function: "Equation", cfg: "(A & !B) | (!A & !C)"});
+const nextC = LUT.addInstance({$name: "next_C", inputs: 3,
+    function: "Equation", cfg: "(A & !B) | (!A & !C)"});
+const invA = LUT.addInstance({$name: "LED_A_active_low", function: "INVA"});
+const invB = LUT.addInstance({$name: "LED_B_active_low", function: "INVA"});
+const invC = LUT.addInstance({$name: "LED_C_active_low", function: "INVA"});
+
+scripting.connect(CP, "OUT", A, "CLK");
+scripting.connect(CP, "OUT", B, "CLK");
+scripting.connect(CP, "OUT", C, "CLK");
+scripting.connect(X, "OUT", nextA, "A");
+scripting.connect(X, "OUT", nextB, "A");
+scripting.connect(X, "OUT", nextC, "A");
+
+// X = 1: A'=!B, B'=!C, C'=!A.
+// X = 0: A'=!C, B'=!A, C'=!B.
+scripting.connect(B, "OUT", nextA, "B");
+scripting.connect(C, "OUT", nextA, "C");
+scripting.connect(C, "OUT", nextB, "B");
+scripting.connect(A, "OUT", nextB, "C");
+scripting.connect(A, "OUT", nextC, "B");
+scripting.connect(B, "OUT", nextC, "C");
+scripting.connect(nextA, "OUT", A, "IN");
+scripting.connect(nextB, "OUT", B, "IN");
+scripting.connect(nextC, "OUT", C, "IN");
+
+scripting.connect(A, "OUT", QA, "IN");
+scripting.connect(B, "OUT", QB, "IN");
+scripting.connect(C, "OUT", QC, "IN");
+scripting.connect(A, "OUT", invA, "A");
+scripting.connect(B, "OUT", invB, "A");
+scripting.connect(C, "OUT", invC, "A");
+scripting.connect(invA, "OUT", LED_A, "IN");
+scripting.connect(invB, "OUT", LED_B, "IN");
+scripting.connect(invC, "OUT", LED_C, "IN");
+
+const SYSTEM = scripting.addModule("/ti/tpld/SYSTEM", {}, false);
+
+CP.$position = [-620, 180];
+X.$position = [-620, -100];
+nextA.$position = [-340, -180];
+nextB.$position = [-340, -30];
+nextC.$position = [-340, 120];
+A.$position = [-80, -180];
+B.$position = [-80, -30];
+C.$position = [-80, 120];
+QA.$position = [190, -230];
+QB.$position = [190, -80];
+QC.$position = [190, 70];
+invA.$position = [170, 200];
+invB.$position = [170, 270];
+invC.$position = [170, 340];
+LED_A.$position = [390, 200];
+LED_B.$position = [390, 270];
+LED_C.$position = [390, 340];

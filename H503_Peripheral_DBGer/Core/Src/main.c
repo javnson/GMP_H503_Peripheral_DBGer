@@ -57,6 +57,7 @@ RTC_HandleTypeDef hrtc;
 SPI_HandleTypeDef hspi2;
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart1;
@@ -67,9 +68,13 @@ PCD_HandleTypeDef hpcd_USB_DRD_FS;
 volatile TPLD_Status tpld_status = TPLD_NO_DEVICE;
 volatile uint8_t tpld_i2c_address = 0;
 volatile uint8_t tpld_loopback_ok = 0;
-volatile uint8_t tpld_already_active = 0;
 volatile uint32_t tpld_loopback_passes = 0;
 volatile uint32_t tpld_loopback_failures = 0;
+#ifdef TPLD_PULSE_DISTRIBUTOR
+volatile uint8_t tpld_phase_abc = 0;
+volatile uint32_t tpld_phase_passes = 0;
+volatile uint32_t tpld_phase_failures = 0;
+#endif
 
 /* USER CODE END PV */
 
@@ -95,32 +100,71 @@ static void MX_USB_PCD_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void TPLD_Loopback_GPIO_Init(void)
+static void TPLD_Pins_Safe_Init(void)
 {
   GPIO_InitTypeDef gpio = {0};
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
-  gpio.Pin = GPIO_PIN_1;
-  gpio.Mode = GPIO_MODE_OUTPUT_PP;
-  gpio.Pull = GPIO_NOPULL;
-  gpio.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &gpio);
-  gpio.Pin = GPIO_PIN_0;
+  gpio.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+#ifdef TPLD_PULSE_DISTRIBUTOR
+  /* PA4/PA5 share the DAC_1/DAC_2 nets with TPLD IO10/IO9. */
+  gpio.Pin |= GPIO_PIN_4 | GPIO_PIN_5;
+#endif
   gpio.Mode = GPIO_MODE_INPUT;
   gpio.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &gpio);
 }
 
-static uint8_t TPLD_Loopback_Check(void)
+static HAL_StatusTypeDef TPLD_Start_10Hz(void)
 {
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
-  HAL_Delay(1);
-  if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) != GPIO_PIN_RESET) return 0;
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
-  HAL_Delay(1);
-  if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) != GPIO_PIN_SET) return 0;
-  return 1;
+  TIM_OC_InitTypeDef channel = {0};
+  GPIO_InitTypeDef gpio = {0};
+
+  /* APB1 timer clock is 250 MHz: 250 MHz / 25000 / 1000 = 10 Hz. */
+  __HAL_RCC_TIM2_CLK_ENABLE();
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 24999U;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 999U;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK) return HAL_ERROR;
+
+  channel.OCMode = TIM_OCMODE_PWM1;
+  channel.Pulse = 500U;
+  channel.OCPolarity = TIM_OCPOLARITY_HIGH;
+  channel.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &channel, TIM_CHANNEL_1) != HAL_OK)
+    return HAL_ERROR;
+
+  gpio.Pin = GPIO_PIN_0;
+  /* SW2 can pull PA0 to ground; use the board's 5.1 kOhm pull-up. */
+  gpio.Mode = GPIO_MODE_AF_OD;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  gpio.Alternate = GPIO_AF1_TIM2;
+  HAL_GPIO_Init(GPIOA, &gpio);
+  return HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
 }
+
+#ifdef TPLD_PULSE_DISTRIBUTOR
+static uint8_t TPLD_Read_Phase(void)
+{
+  uint8_t phase = 0;
+  if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == GPIO_PIN_SET) phase |= 4U;
+  if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_SET) phase |= 2U;
+  if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_5) == GPIO_PIN_SET) phase |= 1U;
+  return phase;
+}
+
+static int8_t TPLD_Phase_Index(uint8_t phase)
+{
+  static const uint8_t ring[6] = {4U, 6U, 2U, 3U, 1U, 5U};
+  for (int8_t i = 0; i < 6; ++i) {
+    if (ring[i] == phase) return i;
+  }
+  return -1;
+}
+#endif
 
 /* USER CODE END 0 */
 
@@ -158,27 +202,54 @@ int main(void)
   /* The software I2C programmer uses GPIO only. */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
-  TPLD_Loopback_GPIO_Init();
+  TPLD_Pins_Safe_Init();
   tpld_status = TPLD2001_Load(&found_address);
   tpld_i2c_address = found_address;
+  if (tpld_status == TPLD_OK && TPLD_Start_10Hz() != HAL_OK)
+    tpld_status = TPLD_PWM_FAILED;
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+#ifdef TPLD_PULSE_DISTRIBUTOR
+  uint8_t sampled_window = 0;
+  int8_t previous_phase_index = -1;
+#endif
   while (1)
   {
-    tpld_loopback_ok = TPLD_Loopback_Check();
-    if (tpld_loopback_ok) {
-      ++tpld_loopback_passes;
-      if (tpld_status == TPLD_NO_DEVICE) {
-        tpld_already_active = 1;
-        tpld_status = TPLD_ALREADY_ACTIVE;
+    if (tpld_status == TPLD_OK) {
+      uint32_t counter = __HAL_TIM_GET_COUNTER(&htim2);
+#ifdef TPLD_PULSE_DISTRIBUTOR
+      /* Observe one settled sample per 10 Hz clock cycle. */
+      if (counter < 200U) sampled_window = 0;
+      if (counter >= 200U && counter < 300U && !sampled_window) {
+        int8_t phase_index;
+        sampled_window = 1;
+        tpld_phase_abc = TPLD_Read_Phase();
+        phase_index = TPLD_Phase_Index(tpld_phase_abc);
+        if (phase_index >= 0 &&
+            (previous_phase_index < 0 ||
+             phase_index == (previous_phase_index + 1) % 6 ||
+             phase_index == (previous_phase_index + 5) % 6)) {
+          ++tpld_phase_passes;
+        } else {
+          ++tpld_phase_failures;
+        }
+        previous_phase_index = phase_index;
       }
-    } else {
-      ++tpld_loopback_failures;
+#else
+      /* Sample PA1 away from each PWM edge. IO12 -> IO11 is a passthrough. */
+      if ((counter >= 100U && counter < 400U) ||
+          (counter >= 600U && counter < 900U)) {
+        GPIO_PinState expected = counter < 500U ? GPIO_PIN_SET : GPIO_PIN_RESET;
+        tpld_loopback_ok = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == expected);
+        if (tpld_loopback_ok) ++tpld_loopback_passes;
+        else ++tpld_loopback_failures;
+      }
+#endif
     }
-    HAL_Delay(100);
+    HAL_Delay(1);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

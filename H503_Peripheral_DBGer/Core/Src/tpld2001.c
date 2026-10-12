@@ -1,5 +1,9 @@
 #include "tpld2001.h"
+#ifdef TPLD_PULSE_DISTRIBUTOR
+#include "tpld2001_pulse_distributor_image.h"
+#else
 #include "tpld2001_image.h"
+#endif
 
 #define TPLD_SDA             GPIO_PIN_5
 #define TPLD_SCL             GPIO_PIN_6
