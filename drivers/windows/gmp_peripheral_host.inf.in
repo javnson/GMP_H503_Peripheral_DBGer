@@ -1,0 +1,29 @@
+; Reference only. Generate and sign a matching catalog before installation.
+; Current single CDC hardware ID is USB\VID_CAFE&PID_5030.
+; After CDC+HID composite conversion the CDC child will be MI_00.
+[Version]
+Signature="$Windows NT$"
+Class=Ports
+ClassGuid={4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider=%GMP%
+CatalogFile=gmp_peripheral_host.cat
+DriverVer=10/12/2026,0.1.0.0
+
+[Manufacturer]
+%GMP%=GMPModels,NTamd64
+
+[GMPModels.NTamd64]
+%GMP.DeviceDesc%=GMPSerial,USB\VID_CAFE&PID_5030
+%GMP.DeviceDesc%=GMPSerial,USB\VID_CAFE&PID_5030&MI_00
+
+[GMPSerial.NT]
+Include=usbser.inf
+Needs=UsbSerial_Install.NT
+
+[GMPSerial.NT.Services]
+Include=usbser.inf
+Needs=UsbSerial_Install.NT.Services
+
+[Strings]
+GMP="GMP"
+GMP.DeviceDesc="GMP Peripheral Host"

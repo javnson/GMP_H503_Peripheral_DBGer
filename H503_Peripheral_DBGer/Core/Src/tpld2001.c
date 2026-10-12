@@ -32,7 +32,8 @@ static uint8_t clock_high(void)
   uint32_t start = HAL_GetTick();
   scl(1);
   while (HAL_GPIO_ReadPin(GPIOB, TPLD_SCL) == GPIO_PIN_RESET) {
-    if ((HAL_GetTick() - start) > 2U) return 0;
+    /* Host-backed EEPROM targets may stretch SCL while USB supplies a page. */
+    if ((HAL_GetTick() - start) > 250U) return 0;
   }
   i2c_delay();
   return 1;

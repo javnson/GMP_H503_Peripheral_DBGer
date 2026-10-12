@@ -40,6 +40,14 @@ GMP_API const char *gmp_error_string(int error);
 GMP_API int gmp_info_get(gmp_device *device, gmp_info *out);
 GMP_API int gmp_status_get(gmp_device *device, gmp_status *out);
 GMP_API int gmp_interface_status_get(gmp_device *device, gmp_interface_status *out);
+typedef struct {
+  uint16_t static_bytes, allocated_bytes, available_bytes, stack_reserve_bytes;
+  uint8_t cpu_percent; /* 0..100; 255 until first one-second sample. */
+} gmp_metrics;
+GMP_API int gmp_metrics_get(gmp_device *device, gmp_metrics *out);
+/* Interface IDs: GPIO=1, I2C=2, I3C=3, SPI=4, QEP=5, UART=6,
+ * RS232=7, RS485=8, CAN=9. Requires firmware protocol >= 1.8. */
+GMP_API int gmp_interface_unbind(gmp_device *device, uint8_t interface_id);
 GMP_API int gmp_gpio_read(gmp_device *device, uint8_t port, uint8_t pin, uint8_t *value);
 GMP_API int gmp_gpio_write(gmp_device *device, uint8_t port, uint8_t pin, uint8_t value);
 enum { GMP_PIN_INPUT = 0, GMP_PIN_OUTPUT = 1, GMP_PIN_ADC = 2, GMP_PIN_DAC = 3 };
@@ -53,6 +61,26 @@ GMP_API int gmp_i2c_target_config(gmp_device *device, uint8_t enable, uint8_t ad
 GMP_API int gmp_i2c_target_profile(gmp_device *device, uint8_t profile,
                                     uint8_t reg, uint16_t value);
 GMP_API int gmp_i2c_target_word(gmp_device *device, uint8_t reg, uint16_t *value);
+/* EEPROM diagnostic access reads/writes the target's volatile 256-byte image. */
+GMP_API int gmp_i2c_eeprom_status(gmp_device *device, uint8_t *busy, uint8_t *error);
+GMP_API int gmp_i2c_eeprom_read(gmp_device *device, uint8_t address,
+                                 uint8_t *data, uint8_t length);
+GMP_API int gmp_i2c_eeprom_write(gmp_device *device, uint8_t address,
+                                  const uint8_t *data, uint8_t length);
+/* For 16/32/64 KiB host-backed images, keep a PC service loop running.
+ * kind 1 requests page data; kind 2 carries changed bytes and mask. */
+typedef struct {
+  uint8_t kind, sequence;
+  uint16_t page;
+  uint8_t page_size;
+  uint8_t mask[16], data[128];
+} gmp_eeprom_event;
+GMP_API int gmp_i2c_eeprom_config(gmp_device *device, uint8_t capacity_log2,
+                                   uint8_t page_size);
+GMP_API int gmp_i2c_eeprom_event(gmp_device *device, gmp_eeprom_event *out);
+GMP_API int gmp_i2c_eeprom_reply(gmp_device *device, const gmp_eeprom_event *event,
+                                  const uint8_t *page_data);
+GMP_API int gmp_i2c_eeprom_invalidate(gmp_device *device);
 GMP_API int gmp_can_config(gmp_device *device, uint32_t nominal_bitrate);
 GMP_API int gmp_can_send(gmp_device *device, uint32_t identifier, uint8_t extended,
                          const uint8_t *data, uint8_t length);
@@ -120,6 +148,12 @@ public:
   gmp_interface_status interface_status() const {
     gmp_interface_status x{}; check(gmp_interface_status_get(handle_, &x)); return x;
   }
+  gmp_metrics metrics() const {
+    gmp_metrics value{}; check(gmp_metrics_get(handle_, &value)); return value;
+  }
+  void interface_unbind(uint8_t interface_id) const {
+    check(gmp_interface_unbind(handle_, interface_id));
+  }
   bool gpio(uint8_t port, uint8_t pin) const {
     uint8_t value = 0; check(gmp_gpio_read(handle_, port, pin, &value)); return value != 0;
   }
@@ -156,6 +190,34 @@ public:
   }
   uint16_t i2c_target_word(uint8_t reg) const {
     uint16_t value = 0; check(gmp_i2c_target_word(handle_, reg, &value)); return value;
+  }
+  std::vector<uint8_t> i2c_eeprom_read(uint8_t address, uint8_t length) const {
+    std::vector<uint8_t> data(length);
+    check(gmp_i2c_eeprom_read(handle_, address, data.data(), length));
+    return data;
+  }
+  void i2c_eeprom_write(uint8_t address, const std::vector<uint8_t> &data) const {
+    if (data.empty() || data.size() > 32) check(GMP_ERR_ARGUMENT);
+    check(gmp_i2c_eeprom_write(handle_, address, data.data(), uint8_t(data.size())));
+  }
+  bool i2c_eeprom_busy(bool &error) const {
+    uint8_t busy_value = 0, error_value = 0;
+    check(gmp_i2c_eeprom_status(handle_, &busy_value, &error_value));
+    error = error_value != 0;
+    return busy_value != 0;
+  }
+  void i2c_eeprom_config(uint8_t capacity_log2, uint8_t page_size) const {
+    check(gmp_i2c_eeprom_config(handle_, capacity_log2, page_size));
+  }
+  gmp_eeprom_event i2c_eeprom_event() const {
+    gmp_eeprom_event event{}; check(gmp_i2c_eeprom_event(handle_, &event)); return event;
+  }
+  void i2c_eeprom_reply(const gmp_eeprom_event &event,
+                        const uint8_t *page_data = nullptr) const {
+    check(gmp_i2c_eeprom_reply(handle_, &event, page_data));
+  }
+  void i2c_eeprom_invalidate() const {
+    check(gmp_i2c_eeprom_invalidate(handle_));
   }
   void can_config(uint32_t bitrate) const { check(gmp_can_config(handle_, bitrate)); }
   void can_send(uint32_t id, bool extended, const std::vector<uint8_t> &data) const {

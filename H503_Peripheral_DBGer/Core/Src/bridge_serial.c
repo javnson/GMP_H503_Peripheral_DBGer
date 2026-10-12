@@ -61,6 +61,19 @@ int BridgeSerial_Config(uint8_t port, uint8_t role, uint32_t baud)
   return 1;
 }
 
+int BridgeSerial_Disable(uint8_t port)
+{
+  SerialPort *p;
+  if (port >= SERIAL_PORTS) return 0;
+  p = &ports[port];
+  if (!p->ready) return 1;
+  p->ready = 0U;
+  if (port == 2U) HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+  if (HAL_UART_DeInit(&p->uart) != HAL_OK) return 0;
+  p->head = p->tail = p->frame_size = 0U;
+  return 1;
+}
+
 int BridgeSerial_Write(uint8_t port, const uint8_t *data, uint8_t size)
 {
   if (port >= SERIAL_PORTS || !ports[port].ready || data == NULL ||

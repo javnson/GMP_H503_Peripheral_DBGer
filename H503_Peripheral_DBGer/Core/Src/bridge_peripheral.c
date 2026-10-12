@@ -109,6 +109,22 @@ int BridgeSpi_Config(uint8_t role, uint8_t mode, uint8_t divider)
   return 1;
 }
 
+int BridgeSpi_Disable(void)
+{
+  GPIO_InitTypeDef gpio = {0};
+  if (!spi_ready) return 1;
+  spi_ready = 0U;
+  HAL_NVIC_DisableIRQ(SPI2_IRQn);
+  if (HAL_SPI_DeInit(&spi) != HAL_OK) return 0;
+  gpio.Pin = GPIO_PIN_8;
+  gpio.Mode = GPIO_MODE_INPUT;
+  gpio.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &gpio);
+  gpio.Pin = GPIO_PIN_2 | GPIO_PIN_14 | GPIO_PIN_15;
+  HAL_GPIO_Init(GPIOB, &gpio);
+  return 1;
+}
+
 int BridgeSpi_Transfer(const uint8_t *tx, uint8_t *rx, uint8_t size)
 {
   HAL_StatusTypeDef status;
@@ -213,6 +229,14 @@ int BridgeQep_Start(void)
   qep_previous = 0;
   qep_ready = 1U;
   return 1;
+}
+
+int BridgeQep_Disable(void)
+{
+  if (!qep_ready) return 1;
+  qep_ready = 0U;
+  if (HAL_TIM_Encoder_Stop(&qep, TIM_CHANNEL_ALL) != HAL_OK) return 0;
+  return HAL_TIM_Encoder_DeInit(&qep) == HAL_OK;
 }
 
 void BridgeQep_Poll(void)

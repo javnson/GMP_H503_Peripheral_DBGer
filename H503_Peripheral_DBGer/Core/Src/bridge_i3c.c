@@ -96,6 +96,19 @@ int BridgeI3c_Config(uint8_t new_role)
   return 1;
 }
 
+int BridgeI3c_Disable(void)
+{
+  if (!ready) return 1;
+  ready = 0U;
+  target_needs_listen = 0U;
+  HAL_NVIC_DisableIRQ(I3C2_EV_IRQn);
+  HAL_NVIC_DisableIRQ(I3C2_ER_IRQn);
+  if (HAL_I3C_DeInit(&bus) != HAL_OK) return 0;
+  __HAL_RCC_I3C2_FORCE_RESET();
+  __HAL_RCC_I3C2_RELEASE_RESET();
+  return 1;
+}
+
 int BridgeI3c_Assign(uint8_t base_address, uint8_t maximum,
                      uint8_t *addresses, uint8_t *actual)
 {

@@ -1,20 +1,30 @@
 #include "gmp_host.h"
+#include "gmp_standard_cli.h"
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 static void usage() {
-  std::cerr << "GMP Peripheral ISO Host CLI\n"
-            << "Usage: gmpctl <port> info|status|interfaces|reset\n"
+  std::cerr << "GMP Peripheral Host CLI\n"
+            << "Usage: gmpctl list\n"
+            << "       gmpctl --port <port> <interface> config [key=value ...] [-e:file.json]\n"
+            << "       gmpctl --port <port> <interface> bind|unbind|tx|rx\n"
+            << "       gmpctl --port <port> [<interface>] save|load config\n"
+            << "Legacy: gmpctl <port> info|status|interfaces|metrics|reset\n"
             << "       gmpctl <port> gpio get <PA0|PA1|PA4|PA5>\n"
             << "       gmpctl <port> gpio set PA0 <0|1>\n"
             << "       gmpctl <port> pin <PA0|PA1> read|mode <input|output|adc>|set <0|1>\n"
             << "       gmpctl <port> i2c <7-bit-address> [write-hex] [read-count]\n"
             << "       gmpctl <port> i2c-target <address>|off\n"
-            << "       gmpctl <port> i2c-profile generic|hdc1080 <reg> <word>\n"
+            << "       gmpctl <port> i2c-profile generic|hdc1080|eeprom <reg> <word>\n"
+            << "       gmpctl <port> eeprom status|read <address> <count>|write <address> <hex>\n"
+            << "       gmpctl <port> eeprom load <256-byte.bin>|serve <16/32/64-KiB.bin>\n"
             << "       gmpctl <port> can config <125000|250000|500000|1000000>\n"
             << "       gmpctl <port> can send <id> <hex-data> [extended]\n"
             << "       gmpctl <port> can recv\n"
@@ -62,6 +72,8 @@ static void print_hex(const uint8_t *data, size_t size) {
 }
 static void check(int rc) { if (rc) throw std::runtime_error(gmp_error_string(rc)); }
 int main(int argc, char **argv) {
+  int standard = gmp_standard_cli(argc, argv);
+  if (standard >= 0) return standard;
   if (argc < 3) { usage(); return 2; }
   try {
     gmp::Device device(argv[1]);
@@ -89,6 +101,16 @@ int main(int argc, char **argv) {
                 << " address=0x" << std::hex << unsigned(x.i2c_target_address)
                 << " serial-ready-mask=0x" << unsigned(x.serial_ready_mask)
                 << std::dec << "\n";
+    } else if (command == "metrics" && argc == 3) {
+      auto x = device.metrics();
+      std::cout << "RAM static=" << x.static_bytes
+                << " allocated=" << x.allocated_bytes
+                << " available=" << x.available_bytes
+                << " stack-reserved=" << x.stack_reserve_bytes
+                << " CPU=";
+      if (x.cpu_percent == 255) std::cout << "sampling";
+      else std::cout << unsigned(x.cpu_percent) << "%";
+      std::cout << "\n";
     } else if (command == "reset" && argc == 3) {
       device.reset(); std::cout << "Reset requested\n";
     } else if (command == "pin" && argc >= 5) {
@@ -151,12 +173,88 @@ int main(int argc, char **argv) {
       }
     } else if (command == "i2c-profile" && argc == 6) {
       std::string profile(argv[3]);
-      uint8_t selected = profile == "hdc1080" ? 1 : profile == "generic" ? 0 : 255;
+      uint8_t selected = profile == "hdc1080" ? 1 : profile == "eeprom" ? 2 :
+                         profile == "generic" ? 0 : 255;
       if (selected == 255) throw std::runtime_error("unknown I2C profile");
       unsigned reg = number(argv[4]), value = number(argv[5]);
       if (reg > 255 || value > 0xFFFF) throw std::runtime_error("I2C profile value out of range");
       check(gmp_i2c_target_profile(device.native_handle(), selected,
                                    uint8_t(reg), uint16_t(value)));
+    } else if (command == "eeprom" && argc >= 4) {
+      std::string operation(argv[3]);
+      if (operation == "status" && argc == 4) {
+        uint8_t busy = 0, error = 0;
+        check(gmp_i2c_eeprom_status(device.native_handle(), &busy, &error));
+        std::cout << "busy=" << unsigned(busy) << " error=" << unsigned(error) << "\n";
+      } else if (operation == "read" && argc == 6) {
+        unsigned address = number(argv[4]), count = number(argv[5]);
+        if (address > 255 || !count || count > 64 || address + count > 256)
+          throw std::runtime_error("EEPROM read range out of bounds");
+        std::array<uint8_t, 64> data{};
+        check(gmp_i2c_eeprom_read(device.native_handle(), uint8_t(address),
+                                  data.data(), uint8_t(count)));
+        print_hex(data.data(), count);
+      } else if (operation == "write" && argc == 6) {
+        unsigned address = number(argv[4]);
+        auto data = hex_data(argv[5], 32);
+        if (address > 255 || address + data.size() > 256)
+          throw std::runtime_error("EEPROM write range out of bounds");
+        check(gmp_i2c_eeprom_write(device.native_handle(), uint8_t(address),
+                                   data.data(), uint8_t(data.size())));
+      } else if (operation == "load" && argc == 5) {
+        std::ifstream file(argv[4], std::ios::binary | std::ios::ate);
+        if (!file || file.tellg() != std::streampos(256))
+          throw std::runtime_error("EEPROM image must be exactly 256 bytes");
+        std::array<uint8_t, 256> image{};
+        file.seekg(0); file.read(reinterpret_cast<char *>(image.data()), image.size());
+        if (!file) throw std::runtime_error("cannot read EEPROM image");
+        check(gmp_i2c_target_config(device.native_handle(), 1, 0x50));
+        check(gmp_i2c_eeprom_config(device.native_handle(), 8, 8));
+        check(gmp_i2c_target_profile(device.native_handle(), 2, 0, 0));
+        for (unsigned offset = 0; offset < 256; offset += 32)
+          check(gmp_i2c_eeprom_write(device.native_handle(), uint8_t(offset),
+                                     image.data() + offset, 32));
+        std::cout << "256-byte image loaded into STM32 RAM\n";
+      } else if (operation == "serve" && argc == 5) {
+        std::fstream file(argv[4], std::ios::in | std::ios::out | std::ios::binary);
+        if (!file) throw std::runtime_error("cannot open EEPROM image for read/write");
+        file.seekg(0, std::ios::end);
+        const auto capacity = file.tellg();
+        uint8_t bits = 0, page_size = 0;
+        if (capacity == std::streampos(16384)) { bits = 14; page_size = 64; }
+        else if (capacity == std::streampos(32768)) { bits = 15; page_size = 64; }
+        else if (capacity == std::streampos(65536)) { bits = 16; page_size = 128; }
+        else throw std::runtime_error("image must be exactly 16, 32, or 64 KiB");
+        check(gmp_i2c_target_config(device.native_handle(), 1, 0x50));
+        check(gmp_i2c_eeprom_config(device.native_handle(), bits, page_size));
+        check(gmp_i2c_target_profile(device.native_handle(), 2, 0, 0));
+        std::cout << "Serving EEPROM image at I2C 0x50; keep this process running (Ctrl+C to stop)\n";
+        for (;;) {
+          gmp_eeprom_event event{};
+          check(gmp_i2c_eeprom_event(device.native_handle(), &event));
+          if (!event.kind) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+          }
+          if ((unsigned(event.page) + 1U) * event.page_size > unsigned(capacity))
+            throw std::runtime_error("device requested page outside image");
+          std::array<uint8_t, 128> data{};
+          file.clear(); file.seekg(event.page * event.page_size);
+          file.read(reinterpret_cast<char *>(data.data()), event.page_size);
+          if (!file) throw std::runtime_error("cannot read EEPROM page");
+          if (event.kind == 1) {
+            check(gmp_i2c_eeprom_reply(device.native_handle(), &event, data.data()));
+          } else if (event.kind == 2) {
+            for (unsigned i = 0; i < event.page_size; ++i)
+              if (event.mask[i / 8] & (1U << (i % 8))) data[i] = event.data[i];
+            file.clear(); file.seekp(event.page * event.page_size);
+            file.write(reinterpret_cast<const char *>(data.data()), event.page_size);
+            file.flush();
+            if (!file) throw std::runtime_error("cannot persist EEPROM page");
+            check(gmp_i2c_eeprom_reply(device.native_handle(), &event, nullptr));
+          } else throw std::runtime_error("unknown EEPROM service event");
+        }
+      } else { usage(); return 2; }
     } else if (command == "can" && argc >= 4) {
       std::string operation(argv[3]);
       if (operation == "config" && argc == 5) {

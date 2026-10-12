@@ -10,12 +10,13 @@ import math
 import re
 import time
 from pathlib import Path
+from eeprom_image import CAPACITIES
 
 INTERFACES = {"gpio", "i2c", "i3c", "spi", "uart", "rs232", "rs485", "qep", "can"}
-PROTOCOLS = {"bridge-register", "hdc1080", "raw", "modbus-rtu", "at", "can-raw", "canopen"}
+PROTOCOLS = {"bridge-register", "hdc1080", "eeprom", "raw", "modbus-rtu", "at", "can-raw", "canopen"}
 ALLOWED_PROTOCOLS = {
     "gpio": {"raw"}, "qep": {"raw"},
-    "i2c": {"bridge-register", "hdc1080", "raw"},
+    "i2c": {"bridge-register", "hdc1080", "eeprom", "raw"},
     "i3c": {"bridge-register", "raw"}, "spi": {"bridge-register", "raw"},
     "uart": {"bridge-register", "raw", "modbus-rtu", "at"},
     "rs232": {"bridge-register", "raw", "modbus-rtu", "at"},
@@ -59,6 +60,8 @@ def validate(data, expected_interface=None, expected_role=None):
         raise ValueError("settings 必须是对象")
     if interface == "i2c":
         number(settings.get("address", 0x40), 8, 0x77)
+    if protocol == "eeprom" and number(settings.get("capacity", 256)) not in CAPACITIES:
+        raise ValueError("EEPROM 容量必须为 256/16384/32768/65536 字节")
     if interface == "i3c" and settings.get("bus_mode", "i3c") not in {"i3c", "i2c"}:
         raise ValueError("I3C 接口 bus_mode 必须是 i3c 或 i2c")
     if interface in {"uart", "rs232", "rs485"}:
@@ -82,10 +85,11 @@ def validate(data, expected_interface=None, expected_role=None):
         if p.get("endian", "big") not in {"big", "little"}:
             raise ValueError("字节序无效")
         width = TYPES[p.get("type", "u8")][0]
-        if protocol in {"bridge-register", "hdc1080", "modbus-rtu"}:
-            upper = 0xFFFF if protocol == "modbus-rtu" else 255
+        if protocol in {"bridge-register", "hdc1080", "eeprom", "modbus-rtu"}:
+            upper = (number(settings.get("capacity", 256)) - 1 if protocol == "eeprom"
+                     else 0xFFFF if protocol == "modbus-rtu" else 255)
             reg = number(p.get("register"), 0, upper)
-            if protocol == "bridge-register" and reg + width > 256:
+            if protocol in {"bridge-register", "eeprom"} and reg + width > (number(settings.get("capacity", 256)) if protocol == "eeprom" else 256):
                 raise ValueError("寄存器访问越界")
             if protocol == "hdc1080" and reg not in {0, 1, 2, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF}:
                 raise ValueError("HDC1080 寄存器地址无效")
@@ -209,6 +213,10 @@ def query(api, profile, binding):
         return raw.hex(" ").upper(), raw.hex(" ").upper()
     if protocol == "bridge-register":
         raw = api.remote_register_read(BUS[interface], number(settings.get("address", 0x30), 0, 127), register, width)
+    elif protocol == "eeprom":
+        address = number(settings.get("address", 0x50), 8, 0x77)
+        pointer = register.to_bytes(1 if number(settings.get("capacity", 256)) == 256 else 2, "big")
+        raw = api.i2c_transfer(address, pointer, width)
     elif protocol == "hdc1080":
         address = number(settings.get("address", 0x40), 8, 0x77)
         api.i2c_transfer(address, bytes([register]), 0)
@@ -248,11 +256,22 @@ def apply_target(api, profile):
     validate(profile)
     interface, protocol = profile["interface"], profile["protocol"]
     settings = profile.get("settings", {})
-    if protocol not in {"bridge-register", "hdc1080"}:
+    if protocol not in {"bridge-register", "hdc1080", "eeprom"}:
         raise NotImplementedError("此协议尚无设备端自动应答实现")
     if interface == "i2c":
         address = number(settings.get("address", 0x40), 8, 0x77)
         api.i2c_target_config(1, address)
+        if protocol == "eeprom":
+            capacity = number(settings.get("capacity", 256))
+            bits, page_size = CAPACITIES[capacity]
+            api.i2c_eeprom_config(bits, page_size)
+            api.i2c_target_profile(2, 0, 0)
+            if capacity == 256:
+                for p in profile["parameters"]:
+                    if "value" in p:
+                        api.i2c_eeprom_write(number(p["register"], 0, 255), encode(p["value"], p))
+                return "24LC02B RAM 仿真已启用；复位后需重新载入镜像"
+            return f"{capacity // 1024} KiB 上位机镜像仿真已启用；须保持页服务运行"
         if protocol == "hdc1080":
             for p in profile["parameters"]:
                 reg = number(p["register"], 0, 255)
@@ -279,6 +298,12 @@ def apply_target(api, profile):
 
 
 def read_target(api, profile, binding):
+    if profile["protocol"] == "eeprom":
+        if number(profile.get("settings", {}).get("capacity", 256)) != 256:
+            raise NotImplementedError("大容量 EEPROM 从机参数请从上位机镜像读取")
+        width = TYPES[binding.get("type", "u8")][0]
+        raw = api.i2c_eeprom_read(number(binding["register"], 0, 255), width)
+        return decode(raw, binding), raw.hex(" ").upper()
     if profile["protocol"] == "hdc1080":
         reg = number(binding["register"], 0, 255)
         raw = api.i2c_target_word(reg).to_bytes(2, "big")
@@ -297,12 +322,35 @@ def write_value(api, profile, binding, value):
     register = number(binding.get("register", 0), 0, 0xFFFF)
     raw = encode(value, binding)
     if profile["role"] == "slave":
-        if protocol == "hdc1080":
+        if protocol == "eeprom":
+            if number(profile.get("settings", {}).get("capacity", 256)) != 256:
+                raise NotImplementedError("大容量 EEPROM 从机参数请修改上位机镜像")
+            api.i2c_eeprom_write(register, raw)
+        elif protocol == "hdc1080":
             if register not in {0, 1, 2}: raise ValueError("该 HDC1080 寄存器不可写")
             api.i2c_target_profile(1, register, int.from_bytes(raw, "big"))
         elif protocol == "bridge-register":
             api.register_write(BUS[interface], register, raw)
         else: raise NotImplementedError("此从机协议暂不支持修改绑定值")
+    elif protocol == "eeprom":
+        address = number(profile.get("settings", {}).get("address", 0x50), 8, 0x77)
+        capacity = number(profile.get("settings", {}).get("capacity", 256))
+        page_size = CAPACITIES[capacity][1]
+        for offset in range(0, len(raw)):
+            # A binding is at most four bytes; split at the device's page boundary.
+            position = register + offset
+            if offset == 0 or position % page_size == 0:
+                end = min(len(raw), offset + (page_size - position % page_size))
+                deadline = time.monotonic() + 0.5
+                while True:
+                    try:
+                        pointer = position.to_bytes(1 if capacity == 256 else 2, "big")
+                        api.i2c_transfer(address, pointer + raw[offset:end], 0)
+                        break
+                    except RuntimeError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.005)
     elif protocol == "bridge-register":
         api.remote_register_write(BUS[interface],
                                   number(profile.get("settings", {}).get("address", 0x30), 0, 127),

@@ -33,4 +33,5 @@ static inline void HAL_GPIO_WritePin(GPIO_TypeDef *gpio, uint32_t pin, uint32_t 
 void HAL_GPIO_EXTI_IRQHandler(uint16_t pin);
 void HAL_GPIO_EXTI_Rising_Callback(uint16_t pin);
 void HAL_GPIO_EXTI_Falling_Callback(uint16_t pin);
+uint32_t HAL_GetTick(void);
 #endif

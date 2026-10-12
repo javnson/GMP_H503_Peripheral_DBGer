@@ -7,6 +7,8 @@
 #include "bridge_registers.h"
 #include "bridge_i3c.h"
 #include "bridge_i2c_target.h"
+#include "bridge_eeprom.h"
+#include "bridge_metrics.h"
 #include "bridge_can.h"
 #include "tpld2001.h"
 #include "stm32h5xx_hal.h"
@@ -31,6 +33,13 @@
 #define CMD_I2C_TARGET_CONFIG 0x21U
 #define CMD_I2C_TARGET_PROFILE 0x22U
 #define CMD_I2C_TARGET_WORD 0x23U
+#define CMD_I2C_EEPROM_STATUS 0x24U
+#define CMD_I2C_EEPROM_READ 0x25U
+#define CMD_I2C_EEPROM_WRITE 0x26U
+#define CMD_I2C_EEPROM_CONFIG 0x27U
+#define CMD_I2C_EEPROM_EVENT 0x28U
+#define CMD_I2C_EEPROM_REPLY 0x29U
+#define CMD_I2C_EEPROM_INVALIDATE 0x2AU
 #define CMD_SPI_CONFIG 0x30U
 #define CMD_SPI_TRANSFER 0x31U
 #define CMD_QEP_START 0x40U
@@ -49,6 +58,8 @@
 #define CMD_CAN_TX 0x72U
 #define CMD_CAN_RX 0x73U
 #define CMD_CAN_STATUS 0x74U
+#define CMD_METRICS 0x75U
+#define CMD_INTERFACE_UNBIND 0x76U
 #define RESULT_OK 0U
 #define RESULT_INVALID 1U
 #define RESULT_IO 2U
@@ -105,9 +116,11 @@ static void handle(void)
   switch (cmd) {
   case CMD_HELLO:
     if (size) { result = RESULT_INVALID; break; }
-    out[n++] = 1; out[n++] = 5; /* protocol major/minor */
-    put32(out + n, 0x0001FFFFUL); n += 4; /* + I2C sensor profile / CAN */
-    memcpy(out + n, "GMP Peripheral ISO Host", 23); n += 23;
+    out[n++] = 1; out[n++] = 8; /* protocol major/minor */
+    put32(out + n, 0x000FFFFFUL); n += 4; /* + confirmed interface unbind */
+    static const char device_name[] = "GMP Peripheral Host";
+    memcpy(out + n, device_name, sizeof(device_name) - 1U);
+    n += sizeof(device_name) - 1U;
     break;
   case CMD_STATUS:
     if (size) { result = RESULT_INVALID; break; }
@@ -214,6 +227,43 @@ static void handle(void)
     out[n++] = (uint8_t)value;
     break;
   }
+  case CMD_I2C_EEPROM_STATUS:
+    if (size) { result = RESULT_INVALID; break; }
+    out[n++] = BridgeEeprom_Busy();
+    out[n++] = BridgeEeprom_Error();
+    break;
+  case CMD_I2C_EEPROM_READ:
+    if (size != 2U || !BridgeEeprom_LocalRead(p[0], out, p[1]))
+      result = RESULT_INVALID;
+    else n = p[1];
+    break;
+  case CMD_I2C_EEPROM_WRITE:
+    if (size < 2U || size > 33U ||
+        !BridgeEeprom_LocalWrite(p[0], p + 1U, (uint8_t)(size - 1U)))
+      result = RESULT_IO;
+    break;
+  case CMD_I2C_EEPROM_CONFIG:
+    if (size != 2U ||
+        !((p[0] == 8U && p[1] == 8U) ||
+          ((p[0] == 14U || p[0] == 15U) && p[1] == 64U) ||
+          (p[0] == 16U && p[1] == 128U))) {
+      result = RESULT_INVALID; break;
+    }
+    /* Release any HDC1080 profile allocation before reusing the one-block
+     * SRAM arena for the EEPROM. The host selects profile 2 afterward. */
+    if (!BridgeI2cTarget_SetProfileWord(0U, 0U, 0U) ||
+        !BridgeEeprom_Config(p[0], p[1])) result = RESULT_INVALID;
+    break;
+  case CMD_I2C_EEPROM_EVENT:
+    if (size) result = RESULT_INVALID;
+    else n = BridgeEeprom_Event(out);
+    break;
+  case CMD_I2C_EEPROM_REPLY:
+    if (!BridgeEeprom_Reply(p, size)) result = RESULT_INVALID;
+    break;
+  case CMD_I2C_EEPROM_INVALIDATE:
+    if (size || !BridgeEeprom_InvalidateCache()) result = RESULT_INVALID;
+    break;
   case CMD_SPI_CONFIG:
     if (size != 3U || !BridgeSpi_Config(p[0], p[1], p[2]))
       result = RESULT_INVALID;
@@ -328,6 +378,33 @@ static void handle(void)
     if (size || !BridgeCan_Status(out)) result = RESULT_INVALID;
     else n = 7U;
     break;
+  case CMD_METRICS: {
+    uint16_t fixed, allocated, available, stack;
+    uint8_t cpu;
+    if (size) { result = RESULT_INVALID; break; }
+    BridgeMetrics_Get(&fixed, &allocated, &available, &stack, &cpu);
+    out[n++] = (uint8_t)fixed; out[n++] = (uint8_t)(fixed >> 8U);
+    out[n++] = (uint8_t)allocated; out[n++] = (uint8_t)(allocated >> 8U);
+    out[n++] = (uint8_t)available; out[n++] = (uint8_t)(available >> 8U);
+    out[n++] = (uint8_t)stack; out[n++] = (uint8_t)(stack >> 8U);
+    out[n++] = cpu;
+    break;
+  }
+  case CMD_INTERFACE_UNBIND:
+    if (size != 1U) { result = RESULT_INVALID; break; }
+    switch (p[0]) {
+    case 1U: result = BridgeGpio_Configure(0U, BRIDGE_GPIO_INPUT, 1U) &&
+                       BridgeGpio_Configure(1U, BRIDGE_GPIO_INPUT, 1U) ? RESULT_OK : RESULT_IO; break;
+    case 2U: result = BridgeI2cTarget_Config(0U, 0U) ? RESULT_OK : RESULT_IO; break;
+    case 3U: result = BridgeI3c_Disable() ? RESULT_OK : RESULT_IO; break;
+    case 4U: result = BridgeSpi_Disable() ? RESULT_OK : RESULT_IO; break;
+    case 5U: result = BridgeQep_Disable() ? RESULT_OK : RESULT_IO; break;
+    case 6U: case 7U: case 8U:
+      result = BridgeSerial_Disable((uint8_t)(p[0] - 6U)) ? RESULT_OK : RESULT_IO; break;
+    case 9U: result = BridgeCan_Disable() ? RESULT_OK : RESULT_IO; break;
+    default: result = RESULT_INVALID; break;
+    }
+    break;
   case CMD_RESET:
     if (size) { result = RESULT_INVALID; break; }
     pending_reset = 1U; reset_tick = HAL_GetTick();
@@ -352,6 +429,8 @@ void Bridge_Init(void)
 {
   BridgeImage image;
   BridgeRegs_Init();
+  BridgeMetrics_Init();
+  BridgeEeprom_Init();
   BridgeGpio_Init();
   boot_status = 0xFFU;
   if (BridgeStore_Read(&image) && image.autoload)
@@ -366,6 +445,8 @@ void Bridge_Poll(void)
   BridgeQep_Poll();
   BridgeSerial_Poll();
   BridgeI3c_Poll();
+  BridgeEeprom_Poll();
+  BridgeI2cTarget_Poll();
   if (pending_response) {
     if (BridgeUsb_Send(response, response_size)) pending_response = 0U;
     return;

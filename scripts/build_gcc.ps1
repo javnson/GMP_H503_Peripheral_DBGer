@@ -28,7 +28,7 @@ $sources = @($project.Project.Targets.Target.Groups.Group.Files.File |
     Where-Object { $_.FilePath -like '*.c' } |
     ForEach-Object { [IO.Path]::GetFullPath((Join-Path $projectDir $_.FilePath)) })
 if ($Example -eq 'bridge') {
-    $sources += @('bridge.c', 'bridge_usb.c', 'bridge_store.c', 'bridge_gpio.c', 'bridge_peripheral.c', 'bridge_serial.c', 'bridge_registers.c', 'bridge_i3c.c', 'bridge_i2c_target.c', 'bridge_can.c') |
+    $sources += @('bridge.c', 'bridge_usb.c', 'bridge_store.c', 'bridge_gpio.c', 'bridge_peripheral.c', 'bridge_serial.c', 'bridge_registers.c', 'bridge_i3c.c', 'bridge_i2c_target.c', 'bridge_eeprom.c', 'bridge_metrics.c', 'bridge_can.c') |
         ForEach-Object { Join-Path $repo "H503_Peripheral_DBGer/Core/Src/$_" }
     $sources += @('stm32h5xx_hal_adc.c', 'stm32h5xx_hal_adc_ex.c') |
         ForEach-Object { Join-Path $repo "H503_Peripheral_DBGer/Drivers/STM32H5xx_HAL_Driver/Src/$_" }

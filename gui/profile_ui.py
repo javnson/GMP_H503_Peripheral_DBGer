@@ -1,14 +1,17 @@
 """Profile-driven pages shared by the physical interface tabs."""
 import copy
 import json
+import os
+import shutil
 from pathlib import Path
 
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget, QAbstractItemView)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
-from profiles import (BUS, TYPES, apply_target, decode_can_frame, load, number,
+from eeprom_image import CAPACITIES, EepromImage, load_to_device, save_from_device
+from profiles import (BUS, TYPES, apply_target, decode, decode_can_frame, encode, load, number,
                       query, read_target, validate, write_value)
 
 
@@ -26,6 +29,10 @@ class ProfilePage(QWidget):
     def __init__(self, api, interface, role, report_error):
         super().__init__()
         self.api, self.interface, self.role, self.report_error = api, interface, role, report_error
+        self.eeprom_image = None
+        self.eeprom_timer = QTimer(self)
+        self.eeprom_timer.setInterval(5)
+        self.eeprom_timer.timeout.connect(self.service_eeprom)
         self.profile = {"schema": 1, "name": "未命名配置", "interface": interface,
                         "role": role, "protocol": "bridge-register",
                         "settings": {}, "parameters": []}
@@ -58,13 +65,19 @@ class ProfilePage(QWidget):
         form = QFormLayout()
         self.name = QLineEdit(self.profile["name"]); form.addRow("配置名称", self.name)
         self.protocol = QComboBox()
-        protocols = (["bridge-register", "hdc1080", "raw"] if interface == "i2c" else
+        protocols = (["bridge-register", "hdc1080", "eeprom", "raw"] if interface == "i2c" else
                      ["bridge-register", "raw"] if interface in {"i3c", "spi"} else
                      ["bridge-register", "raw", "modbus-rtu", "at"] if interface in {"uart", "rs232", "rs485"} else
                      ["can-raw", "canopen"] if interface == "can" else ["raw"])
         self.protocol.addItems(protocols); form.addRow("协议", self.protocol)
         self.address = QLineEdit("0x40" if interface == "i2c" else "0x30")
         if interface in {"i2c", "i3c"}: form.addRow("设备地址", self.address)
+        self.capacity = QComboBox()
+        if interface == "i2c":
+            for capacity, label in ((256, "256 B / 24LC02B"), (16384, "16 KiB / 24LC128"),
+                                    (32768, "32 KiB / 24LC256"), (65536, "64 KiB / 24LC512")):
+                self.capacity.addItem(label, capacity)
+            form.addRow("EEPROM 容量", self.capacity)
         self.baud = QLineEdit("115200")
         if interface in {"uart", "rs232", "rs485"}: form.addRow("波特率", self.baud)
         self.unit = QLineEdit("1")
@@ -85,6 +98,14 @@ class ProfilePage(QWidget):
                                ("应用接口配置", self.apply), ("刷新端口状态", self.refresh_port_status)):
             button = QPushButton(title); button.clicked.connect(handler); actions.addWidget(button)
         layout.addLayout(actions)
+        if interface == "i2c" and role == "slave":
+            image_actions = QHBoxLayout()
+            for title, handler in (("新建空白镜像", self.create_eeprom_image),
+                                   ("载入 EEPROM 镜像 (.bin)", self.load_eeprom_image),
+                                   ("导出 EEPROM 镜像 (.bin)", self.save_eeprom_image)):
+                button = QPushButton(title); button.clicked.connect(handler)
+                image_actions.addWidget(button)
+            layout.addLayout(image_actions)
         self.table = QTableWidget(0, len(COLUMNS)); self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.horizontalHeaderItem(2).setToolTip("u8/i8/u16/i16/u32/i32")
         self.table.horizontalHeaderItem(3).setToolTip("big 或 little")
@@ -140,6 +161,9 @@ class ProfilePage(QWidget):
         self.protocol.setCurrentText(profile["protocol"])
         settings = profile.get("settings", {})
         self.address.setText(str(settings.get("address", "0x40" if self.interface == "i2c" else "0x30")))
+        if self.interface == "i2c":
+            index = self.capacity.findData(number(settings.get("capacity", 256)))
+            self.capacity.setCurrentIndex(index if index >= 0 else 0)
         self.baud.setText(str(settings.get("baud", 115200)))
         self.unit.setText(str(settings.get("unit", 1)))
         if self.interface == "can": self.bitrate.setCurrentText(str(settings.get("nominal_bitrate", 500000)))
@@ -201,6 +225,8 @@ class ProfilePage(QWidget):
                        parameters=[self._binding(row) for row in range(self.table.rowCount())])
         settings = profile.setdefault("settings", {})
         if self.interface in {"i2c", "i3c"}: settings["address"] = number(self.address.text(), 8, 0x77)
+        if self.interface == "i2c" and self.protocol.currentText() == "eeprom":
+            settings["capacity"] = self.capacity.currentData()
         if self.interface in {"uart", "rs232", "rs485"}:
             settings["baud"] = number(self.baud.text(), 1200, 2000000)
             settings["unit"] = number(self.unit.text(), 1, 247)
@@ -212,6 +238,8 @@ class ProfilePage(QWidget):
     def apply(self):
         try:
             profile = self.collect()
+            self.eeprom_timer.stop()
+            if self.interface == "i2c": self.api.eeprom_image_size = 0
             if self.interface == "can":
                 info = self.api.info()
                 if not info.capabilities & (1 << 16):
@@ -222,11 +250,29 @@ class ProfilePage(QWidget):
             if self.interface == "i3c" and self.mode.currentIndex() == 1:
                 raise NotImplementedError("I3C 引脚上的 I²C 兼容模式尚未实现")
             if self.role == "slave":
-                if self.interface == "i2c" and profile["protocol"] == "hdc1080":
+                if self.interface == "i2c" and profile["protocol"] in {"hdc1080", "eeprom"}:
                     info = self.api.info()
-                    if (info.protocol_major, info.protocol_minor) < (1, 5):
-                        raise RuntimeError("HDC1080 仿真需要固件协议 1.5；请更新目标板固件")
+                    required = (1, 7) if profile["protocol"] == "eeprom" else (1, 5)
+                    if (info.protocol_major, info.protocol_minor) < required:
+                        raise RuntimeError(f"该仿真需要固件协议 {required[0]}.{required[1]}；请更新目标板固件")
+                    if profile["protocol"] == "eeprom" and profile["settings"]["capacity"] > 256:
+                        if not self.eeprom_image or self.eeprom_image.capacity != profile["settings"]["capacity"]:
+                            raise ValueError("大容量 EEPROM 需先载入同容量的 .bin 镜像文件")
                 message = apply_target(self.api, profile)
+                if (self.interface == "i2c" and profile["protocol"] == "eeprom" and
+                        self.eeprom_image and self.eeprom_image.capacity == profile["settings"]["capacity"]):
+                    if self.eeprom_image.capacity == 256:
+                        load_to_device(self.api, self.eeprom_image)
+                        self.eeprom_timer.setInterval(1000)
+                        self.eeprom_timer.start()
+                        self.api.eeprom_image_size = 256
+                        message += "；镜像已载入 STM32 RAM，每秒同步回电脑"
+                    else:
+                        self.eeprom_timer.setInterval(5)
+                        self.eeprom_timer.start()
+                        self.api.eeprom_image_size = self.eeprom_image.capacity
+                        message += (f"；正在服务 {self.eeprom_image.path.name}；"
+                                    "大容量页服务仍为实验模式，随机读写时序未完成验证")
             elif self.interface == "i2c":
                 self.api.i2c_target_config(0, 0); message = "I²C 主机已启用"
             elif self.interface == "i3c":
@@ -268,6 +314,9 @@ class ProfilePage(QWidget):
                 message = f"I3C ready={status.i3c_ready}，角色={status.i3c_role}，错误=0x{status.i3c_error:X}"
             elif self.interface == "i2c":
                 message = f"I²C 从机={status.i2c_target_active}，地址=0x{status.i2c_target_address:02X}"
+                if self.role == "slave" and self.protocol.currentText() == "eeprom":
+                    busy, error = self.api.i2c_eeprom_status()
+                    message += f"，EEPROM 忙={busy}，错误={error}"
             elif self.interface in {"uart", "rs232", "rs485"}:
                 message = f"{self.interface.upper()} 就绪={bool(status.serial_ready_mask & (1 << BUS[self.interface]))}"
             elif self.interface == "gpio":
@@ -292,7 +341,15 @@ class ProfilePage(QWidget):
             if row < 0: raise ValueError("请先选中一条参数")
             profile = self.collect(); binding = profile["parameters"][row]
             if "value" not in binding: raise ValueError("请在“初值”列填入要写入的数值")
-            write_value(self.api, profile, binding, binding["value"])
+            if self._large_eeprom_slave(profile):
+                if binding.get("access", "r") != "rw": raise ValueError("该参数为只读")
+                raw = encode(binding["value"], binding)
+                self.eeprom_image.file.seek(number(binding["register"]))
+                self.eeprom_image.file.write(raw)
+                os.fsync(self.eeprom_image.file.fileno())
+                self.api.i2c_eeprom_invalidate()
+            else:
+                write_value(self.api, profile, binding, binding["value"])
             self.status.setText(f"已写入 {binding['name']}")
             self._query_row(row)
         except Exception as error: self.report_error(error)
@@ -300,7 +357,12 @@ class ProfilePage(QWidget):
     def _query_row(self, row):
         try:
             profile = self.collect(); binding = profile["parameters"][row]
-            if self.role == "slave": value, raw = read_target(self.api, profile, binding)
+            if self._large_eeprom_slave(profile):
+                width = TYPES[binding.get("type", "u8")][0]
+                self.eeprom_image.file.seek(number(binding["register"]))
+                content = self.eeprom_image.file.read(width)
+                value, raw = decode(content, binding), content.hex(" ").upper()
+            elif self.role == "slave": value, raw = read_target(self.api, profile, binding)
             else: value, raw = query(self.api, profile, binding)
             self.table.item(row, 9).setText(display_value(value))
             self.table.item(row, 10).setText(raw)
@@ -310,6 +372,67 @@ class ProfilePage(QWidget):
             self.status.setText(f"读取失败：{error}")
             self.report_error(error)
             return False
+
+    def _large_eeprom_slave(self, profile):
+        return (self.role == "slave" and profile["protocol"] == "eeprom" and
+                number(profile["settings"].get("capacity", 256)) > 256 and self.eeprom_image is not None)
+
+    def load_eeprom_image(self):
+        try:
+            profile = self.collect()
+            if profile["protocol"] != "eeprom": raise ValueError("请先选择 EEPROM 协议")
+            capacity = profile["settings"]["capacity"]
+            path, _ = QFileDialog.getOpenFileName(self, "载入 EEPROM 二进制镜像", str(PRESETS), "Binary (*.bin);;All files (*)")
+            if not path: return
+            image = EepromImage(path, capacity)
+            self.eeprom_timer.stop()
+            if self.eeprom_image: self.eeprom_image.close()
+            self.eeprom_image = image
+            self.status.setText(f"已选择 {path}（{capacity} 字节）；点击“应用接口配置”载入并启动")
+        except Exception as error: self.report_error(error)
+
+    def create_eeprom_image(self):
+        try:
+            profile = self.collect()
+            if profile["protocol"] != "eeprom": raise ValueError("请先选择 EEPROM 协议")
+            capacity = profile["settings"]["capacity"]
+            path, _ = QFileDialog.getSaveFileName(self, "新建空白 EEPROM 镜像", "eeprom.bin", "Binary (*.bin)")
+            if not path: return
+            Path(path).write_bytes(bytes([0xFF]) * capacity)
+            image = EepromImage(path, capacity)
+            self.eeprom_timer.stop()
+            if self.eeprom_image: self.eeprom_image.close()
+            self.eeprom_image = image
+            self.status.setText(f"已新建 {capacity} 字节镜像 {path}；点击“应用接口配置”启动")
+        except Exception as error: self.report_error(error)
+
+    def save_eeprom_image(self):
+        try:
+            profile = self.collect()
+            if profile["protocol"] != "eeprom": raise ValueError("请先选择 EEPROM 协议")
+            path, _ = QFileDialog.getSaveFileName(self, "导出 EEPROM 镜像", "eeprom.bin", "Binary (*.bin)")
+            if not path: return
+            if profile["settings"]["capacity"] == 256:
+                save_from_device(self.api, path)
+            else:
+                if not self.eeprom_image: raise ValueError("请先载入大容量 EEPROM 镜像")
+                if Path(path).resolve() != self.eeprom_image.path.resolve():
+                    shutil.copyfile(self.eeprom_image.path, path)
+            self.status.setText(f"EEPROM 镜像已保存到 {path}")
+        except Exception as error: self.report_error(error)
+
+    def service_eeprom(self):
+        try:
+            if self.eeprom_image:
+                if self.eeprom_image.capacity == 256:
+                    self.eeprom_image.sync_small_from_device(self.api)
+                else:
+                    self.eeprom_image.service_once(self.api)
+        except Exception as error:
+            self.eeprom_timer.stop()
+            self.api.eeprom_image_size = 0
+            self.status.setText(f"EEPROM 页服务已停止：{error}")
+            self.report_error(error)
 
     def decode_can(self):
         try:

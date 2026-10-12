@@ -30,6 +30,8 @@ GUI 的每个物理接口有独立标签。GPIO/QEP 提供参数查询；I²C、
 | --- | --- | --- | --- |
 | 桥接寄存器 I²C/I3C/SPI/串口 | 已实现 | 已实现 | I3C 主机需先在原始操作页 ENTDAA；SPI 和 I3C 使用固定 37 字节帧。 |
 | HDC1080 I²C | 已实现 | 固件 1.5 起提供仿真 | 目标地址默认 `0x40`；温度、湿度、配置和 ID 按 16 位寄存器返回。目标侧可修改模拟温湿度；通过 I²C 总线读温湿度为只读。当前仿真没有实际传感器的转换延时和 NACK 忙状态。 |
+| 24LC02B 类 I²C EEPROM | 已实现 | 固件 1.7 起提供 SRAM 仿真 | 256 B、8 B 页、1 字节地址指针；可新建、载入、导出二进制镜像。绑定时才分配 264 B SRAM；复位后需再次载入电脑镜像。双板 1000 次随机页写通过。 |
+| 24LC128/256/512 类 I²C EEPROM | 按 2 字节地址查询 | 页服务实验中 | 16/32/64 KiB 镜像保存在电脑，MCU 按需分配单页缓存。16 KiB 随机读写压力测试仍有间歇性 I²C 失败；当前用于开发验证，不宜接入要求稳定 EEPROM 时序的外部主机。 |
 | Modbus RTU 串口 | 功能码 03 查询及 06 写单寄存器 | 待实现 | 主机用现有透明串口，CRC16 校验；没有 Modbus 从机固件。 |
 | AT 串口 | 发送命令、读取响应、可按正则提取 | 待实现 | 设备透明串口作为 AT 主机。 |
 | CAN 原始帧 | 固件 1.5 起支持经典 CAN 配置/收发 | CAN 为对等总线，两个页均可配置/收发 | 支持 125/250/500/1000 kbit/s、11/29 位标识符、0..8 字节。发送调用表示帧已进入发送队列，不保证总线已经 ACK。CAN FD 尚未启用。 |
@@ -39,6 +41,8 @@ GUI 的每个物理接口有独立标签。GPIO/QEP 提供参数查询；I²C、
 
 HDC1080 示例依据 [TI 数据手册](https://www.ti.com/lit/ds/symlink/hdc1080.pdf) 的寄存器表、温湿度换算和 `0x5449/0x1050` ID。仿真示例用于调试 I²C 软件路径；它不是完整的时序/功耗模型。
 
+EEPROM 预设位于 `eeprom-24lc02b-*.json` 和 `eeprom-24lc128-*.json`。从机页先选容量并新建或载入同容量 `.bin`，再点击“应用接口配置”；仅导入 JSON 不分配 STM32 内存。256 B 镜像会上传到 STM32 SRAM，GUI 每秒读取并将外部 I²C 修改同步到电脑文件；若在两次同步之间关闭 GUI 或断电，最后一次修改可能丢失。大容量镜像由电脑上的 GUI 页服务定时响应读页请求并将写页变更写回文件。关闭 GUI 页服务或拔掉 USB 后，大容量仿真无法正常应答缓存外数据。容量与页长度分别参照 [Microchip 24LC02B 数据手册](https://ww1.microchip.com/downloads/en/DeviceDoc/24AA02-24LC02B-24FC02-Data-Sheet-20001709L.pdf)、[24LC128 产品页](https://www.microchip.com/en-us/product/24LC128) 和 [24LC512 数据手册](https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/24AA512-24LC512-24FC512-512-Kbit-I2C-Serial-EEPROM-DS20001754.pdf)。
+
 ## 使用示例
 
 1. 在目标板的 I²C“从机配置 / 参数”导入 `hdc1080-slave.json`，点击“应用接口配置”。目标板固件必须为协议 1.5 或更新。
@@ -47,4 +51,4 @@ HDC1080 示例依据 [TI 数据手册](https://www.ti.com/lit/ds/symlink/hdc1080
 
 ## 实物验证（2026-10-12）
 
-两块板已更新到协议 1.5，CANH/CANL 已互连。`python scripts/two-board-profile-smoke.py COM5 COM4 --iterations 20` 在 125/250/500/1000 kbit/s 各完成 40 帧双向收发，共 160 帧，覆盖标准/扩展 ID 与 0/1/8 字节数据；两板均无 bus-off 或错误计数。HDC1080 仿真从 #2 经 I²C 被 #1 读取到约 25 °C、50 %RH、厂商 ID `0x5449` 和器件 ID `0x1050`。GUI 绑定表的导入、应用和批量查询也经过这两块板验证。既有两板回归脚本对 UART、RS232、RS485、I²C、SPI 四模式和 I3C 各完成 20 轮读写，通过。#1 的 TPLD 镜像槽前后 SHA-256 相同。
+#1 板保留协议 1.5，#2 板现为协议 1.8，CANH/CANL 已互连。`python scripts/two-board-profile-smoke.py COM5 COM4 --iterations 20` 在 125/250/500/1000 kbit/s 各完成 40 帧双向收发，共 160 帧，覆盖标准/扩展 ID 与 0/1/8 字节数据；两板均无 bus-off 或错误计数。HDC1080 仿真从 #2 经 I²C 被 #1 读取到约 25 °C、50 %RH、厂商 ID `0x5449` 和器件 ID `0x1050`。GUI 绑定表的导入、应用和批量查询也经过这两块板验证。既有两板回归脚本对 UART、RS232、RS485、I²C、SPI 四模式和 I3C 各完成 20 轮读写，通过。#1 的 TPLD 镜像槽前后 SHA-256 相同。

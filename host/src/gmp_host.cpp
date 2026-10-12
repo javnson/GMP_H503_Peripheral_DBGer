@@ -143,7 +143,7 @@ int gmp_open(const char *port, gmp_device **out) {
   if (d->port == INVALID_HANDLE_VALUE) { delete d; return GMP_ERR_IO; }
   DCB config{}; config.DCBlength = sizeof(config);
   if (!GetCommState(d->port, &config)) { gmp_close(d); return GMP_ERR_IO; }
-  config.BaudRate = CBR_115200; config.ByteSize = 8;
+  config.BaudRate = 921600; config.ByteSize = 8;
   config.Parity = NOPARITY; config.StopBits = ONESTOPBIT;
   config.fDtrControl = DTR_CONTROL_ENABLE;
   if (!SetCommState(d->port, &config)) { gmp_close(d); return GMP_ERR_IO; }
@@ -152,7 +152,7 @@ int gmp_open(const char *port, gmp_device **out) {
   if (d->port < 0) { delete d; return GMP_ERR_IO; }
   termios config{};
   if (tcgetattr(d->port, &config) != 0) { gmp_close(d); return GMP_ERR_IO; }
-  cfmakeraw(&config); cfsetispeed(&config, B115200); cfsetospeed(&config, B115200);
+  cfmakeraw(&config); cfsetispeed(&config, B921600); cfsetospeed(&config, B921600);
   config.c_cflag |= CLOCAL | CREAD;
   if (tcsetattr(d->port, TCSANOW, &config) != 0) { gmp_close(d); return GMP_ERR_IO; }
 #endif
@@ -190,6 +190,11 @@ int gmp_info_get(gmp_device *d, gmp_info *out) {
   memcpy(out->name, result.data() + 6, n); out->name[n] = 0;
   return GMP_OK;
 }
+int gmp_interface_unbind(gmp_device *d, uint8_t interface_id) {
+  if (interface_id < 1 || interface_id > 9) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  return transact(d, 0x76, &interface_id, 1, result);
+}
 int gmp_status_get(gmp_device *d, gmp_status *out) {
   if (!out) return GMP_ERR_ARGUMENT;
   std::vector<uint8_t> result;
@@ -215,6 +220,19 @@ int gmp_interface_status_get(gmp_device *d, gmp_interface_status *out) {
   out->i2c_target_active = result[12];
   out->i2c_target_address = result[13];
   out->serial_ready_mask = result[14];
+  return GMP_OK;
+}
+int gmp_metrics_get(gmp_device *d, gmp_metrics *out) {
+  if (!out) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x75, nullptr, 0, result);
+  if (rc) return rc;
+  if (result.size() != 9) return GMP_ERR_PROTOCOL;
+  out->static_bytes = uint16_t(result[0]) | (uint16_t(result[1]) << 8);
+  out->allocated_bytes = uint16_t(result[2]) | (uint16_t(result[3]) << 8);
+  out->available_bytes = uint16_t(result[4]) | (uint16_t(result[5]) << 8);
+  out->stack_reserve_bytes = uint16_t(result[6]) | (uint16_t(result[7]) << 8);
+  out->cpu_percent = result[8];
   return GMP_OK;
 }
 int gmp_gpio_read(gmp_device *d, uint8_t port, uint8_t pin, uint8_t *value) {
@@ -273,7 +291,8 @@ int gmp_i2c_target_config(gmp_device *d, uint8_t enable, uint8_t address) {
 }
 int gmp_i2c_target_profile(gmp_device *d, uint8_t profile, uint8_t reg,
                            uint16_t value) {
-  if (profile > 1 || (profile && reg != 0 && reg != 1 && reg != 2))
+  if (profile > 2 || (profile == 1 && reg != 0 && reg != 1 && reg != 2) ||
+      (profile == 2 && (reg != 0 || value != 0)))
     return GMP_ERR_ARGUMENT;
   uint8_t p[] = {profile, reg, uint8_t(value >> 8), uint8_t(value)};
   std::vector<uint8_t> result;
@@ -287,6 +306,78 @@ int gmp_i2c_target_word(gmp_device *d, uint8_t reg, uint16_t *value) {
   if (result.size() != 2) return GMP_ERR_PROTOCOL;
   *value = uint16_t(result[0] << 8) | result[1];
   return GMP_OK;
+}
+int gmp_i2c_eeprom_status(gmp_device *d, uint8_t *busy, uint8_t *error) {
+  if (!busy || !error) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x24, nullptr, 0, result);
+  if (rc) return rc;
+  if (result.size() != 2) return GMP_ERR_PROTOCOL;
+  *busy = result[0]; *error = result[1];
+  return GMP_OK;
+}
+int gmp_i2c_eeprom_read(gmp_device *d, uint8_t address,
+                        uint8_t *data, uint8_t length) {
+  if (!data || !length || length > 64 || unsigned(address) + length > 256)
+    return GMP_ERR_ARGUMENT;
+  uint8_t request[] = {address, length};
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x25, request, sizeof(request), result);
+  if (rc) return rc;
+  if (result.size() != length) return GMP_ERR_PROTOCOL;
+  memcpy(data, result.data(), length);
+  return GMP_OK;
+}
+int gmp_i2c_eeprom_write(gmp_device *d, uint8_t address,
+                         const uint8_t *data, uint8_t length) {
+  if (!data || !length || length > 32 || unsigned(address) + length > 256)
+    return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> request{address};
+  request.insert(request.end(), data, data + length);
+  std::vector<uint8_t> result;
+  return transact(d, 0x26, request.data(), request.size(), result);
+}
+int gmp_i2c_eeprom_config(gmp_device *d, uint8_t bits, uint8_t page_size) {
+  if (!((bits == 8 && page_size == 8) ||
+        ((bits == 14 || bits == 15) && page_size == 64) ||
+        (bits == 16 && page_size == 128))) return GMP_ERR_ARGUMENT;
+  uint8_t request[] = {bits, page_size};
+  std::vector<uint8_t> result;
+  return transact(d, 0x27, request, sizeof(request), result);
+}
+int gmp_i2c_eeprom_event(gmp_device *d, gmp_eeprom_event *out) {
+  if (!out) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x28, nullptr, 0, result);
+  if (rc) return rc;
+  if (result.size() < 5 || result[0] > 2) return GMP_ERR_PROTOCOL;
+  memset(out, 0, sizeof(*out));
+  out->kind = result[0]; out->sequence = result[1];
+  out->page = uint16_t(result[2]) | (uint16_t(result[3]) << 8);
+  out->page_size = result[4];
+  if (out->kind == 2) {
+    if ((out->page_size != 64 && out->page_size != 128) ||
+        result.size() != size_t(21 + out->page_size)) return GMP_ERR_PROTOCOL;
+    memcpy(out->mask, result.data() + 5, 16);
+    memcpy(out->data, result.data() + 21, out->page_size);
+  } else if (result.size() != 5) return GMP_ERR_PROTOCOL;
+  return GMP_OK;
+}
+int gmp_i2c_eeprom_reply(gmp_device *d, const gmp_eeprom_event *event,
+                         const uint8_t *page_data) {
+  if (!event || event->kind < 1 || event->kind > 2 ||
+      (event->kind == 1 && !page_data) ||
+      (event->page_size != 64 && event->page_size != 128)) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> request{event->kind, event->sequence,
+                               uint8_t(event->page), uint8_t(event->page >> 8)};
+  if (event->kind == 1)
+    request.insert(request.end(), page_data, page_data + event->page_size);
+  std::vector<uint8_t> result;
+  return transact(d, 0x29, request.data(), request.size(), result);
+}
+int gmp_i2c_eeprom_invalidate(gmp_device *d) {
+  std::vector<uint8_t> result;
+  return transact(d, 0x2A, nullptr, 0, result);
 }
 int gmp_can_config(gmp_device *d, uint32_t bitrate) {
   if (bitrate != 125000 && bitrate != 250000 && bitrate != 500000 && bitrate != 1000000)

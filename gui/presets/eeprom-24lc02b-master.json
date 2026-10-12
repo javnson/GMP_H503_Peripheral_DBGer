@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "24LC02B EEPROM 主机",
+  "interface": "i2c",
+  "role": "master",
+  "protocol": "eeprom",
+  "settings": {"address": 80, "capacity": 256},
+  "parameters": [
+    {"name": "配置字", "register": 0, "type": "u16", "endian": "big", "access": "rw"},
+    {"name": "页边界前一字节", "register": 7, "type": "u8", "access": "rw"},
+    {"name": "页边界后一字节", "register": 8, "type": "u8", "access": "rw"},
+    {"name": "最后一字节", "register": 255, "type": "u8", "access": "rw"}
+  ]
+}

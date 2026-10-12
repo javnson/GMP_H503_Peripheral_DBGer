@@ -48,6 +48,14 @@ int BridgeCan_Config(uint32_t bitrate)
   return 1;
 }
 
+int BridgeCan_Disable(void)
+{
+  if (!ready) return 1;
+  ready = 0U;
+  if (HAL_FDCAN_Stop(&can) != HAL_OK) return 0;
+  return HAL_FDCAN_DeInit(&can) == HAL_OK;
+}
+
 int BridgeCan_Send(uint32_t identifier, uint8_t extended,
                    const uint8_t *data, uint8_t length)
 {

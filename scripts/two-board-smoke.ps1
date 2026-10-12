@@ -2,13 +2,15 @@ param(
     [Parameter(Mandatory = $true)][string]$MasterPort,
     [Parameter(Mandatory = $true)][string]$TargetPort,
     [ValidateRange(1, 100)][int]$Iterations = 3,
-    [string]$CliPath = (Join-Path $PSScriptRoot '..\host\dist\bin\gmpctl.exe')
+    [string]$CliPath
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $CliPath) { $CliPath = Join-Path $PSScriptRoot '..\host\dist\bin\gmpctl.exe' }
 if (-not (Test-Path -LiteralPath $CliPath)) { throw "Missing CLI: $CliPath" }
 
 function Invoke-Bridge([string]$Port, [string[]]$Arguments) {
+    $ErrorActionPreference = 'Continue'
     $output = & $CliPath $Port @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "$Port $($Arguments -join ' '): $($output -join ' ')"
@@ -22,8 +24,10 @@ function Assert-Bridge([string]$Actual, [string]$Expected, [string]$Label) {
     }
 }
 
-Assert-Bridge (Invoke-Bridge $MasterPort @('info')).Split(' protocol ')[0] 'GMP Peripheral ISO Host' 'master identity'
-Assert-Bridge (Invoke-Bridge $TargetPort @('info')).Split(' protocol ')[0] 'GMP Peripheral ISO Host' 'target identity'
+$masterIdentity = ((Invoke-Bridge $MasterPort @('info')) -split ' protocol ', 2)[0]
+$targetIdentity = ((Invoke-Bridge $TargetPort @('info')) -split ' protocol ', 2)[0]
+if ($masterIdentity -notin @('GMP Peripheral ISO Host', 'GMP Peripheral Host')) { throw "Unexpected master identity: $masterIdentity" }
+if ($targetIdentity -notin @('GMP Peripheral ISO Host', 'GMP Peripheral Host')) { throw "Unexpected target identity: $targetIdentity" }
 
 foreach ($bus in @('uart', 'rs232', 'rs485')) {
     Invoke-Bridge $TargetPort @('reg', $bus, 'set', '0x10', 'AABBCC') | Out-Null

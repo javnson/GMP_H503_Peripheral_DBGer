@@ -17,6 +17,8 @@ host/build-linux/
 host/dist-linux/
 gui/.venv/
 gui/presets/*.local.json
+gui/presets/*.local.bin
+gui/images/*.bin
 .venv/
 .pytest_cache/
 

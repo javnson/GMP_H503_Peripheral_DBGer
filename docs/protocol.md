@@ -1,4 +1,4 @@
-# GMP Peripheral ISO Host 协议 v1
+# GMP Peripheral Host 协议 v1
 
 传输层为 USB CDC ACM 串口，端口波特率设置不影响 USB 实际速率。多字节整数均为小端；每次只允许一个待处理请求。CRC16 使用 CCITT-FALSE：初始值 `0xFFFF`，多项式 `0x1021`，覆盖从魔数到 payload 末字节。
 
@@ -29,8 +29,15 @@
 | `13 RESET` | 空 | 空；设备应答后约 250 ms 复位 |
 | `20 I2C_TRANSFER` | 7 位地址, 写长度, 读长度, 写数据 | 读数据；各方向最多 64 字节，支持写后重复起始读 |
 | `21 I2C_TARGET_CONFIG` | enable 0/1, 7 位地址 | 空；PB5/PB6 软件从机启用/关闭，与主机命令互斥 |
-| `22 I2C_TARGET_PROFILE` | profile、register、16 位大端值 | 空；profile=0 平坦字节寄存器，profile=1 HDC1080 仿真，后者可设温度 0x00、湿度 0x01、配置 0x02 |
+| `22 I2C_TARGET_PROFILE` | profile、register、16 位大端值 | 空；profile=0 平坦字节寄存器，1 HDC1080，2 EEPROM。EEPROM 的 register/value 必须为 0；先使用 `27` 选择容量。 |
 | `23 I2C_TARGET_WORD` | 16 位寄存器地址的低 8 位 | 当前仿真寄存器值，大端 2 字节 |
+| `24 I2C_EEPROM_STATUS` | 空 | busy、error 各 1 字节 |
+| `25 I2C_EEPROM_READ` | 8 位起始地址、长度 1..64 | 256 B SRAM 镜像数据；仅小容量模式 |
+| `26 I2C_EEPROM_WRITE` | 8 位起始地址、1..32 字节数据 | 空；写入 256 B SRAM 镜像，仅小容量模式 |
+| `27 I2C_EEPROM_CONFIG` | 容量对数、页长 | 空；`8/8`、`14/64`、`15/64`、`16/128` 对应 256 B/16/32/64 KiB；重新配置会清除旧 SRAM 状态 |
+| `28 I2C_EEPROM_EVENT` | 空 | kind、sequence、page `u16`、page_size；kind=2 后附 16 字节位掩码和整页暂存数据 |
+| `29 I2C_EEPROM_REPLY` | kind、sequence、page `u16`；kind=1 再附整页数据 | 空；回应事件 `28`，kind=2 表示电脑已完成写回 |
+| `2A I2C_EEPROM_INVALIDATE` | 空 | 空；使大容量 EEPROM 缓存失效，以便下次从电脑镜像重新取页 |
 | `30 SPI_CONFIG` | role, mode, divider | 空；role=0 主机、1 固定帧从机；mode=0..3。Mode 0 硬件主机使用 divider=0..7 对应 /2..../256；Mode 1/2/3 当前为低速 GPIO 主机，divider 暂不控制时钟。 |
 | `31 SPI_TRANSFER` | 1..64 字节发送数据 | 等长接收数据；PA8 片选拉低期间全双工传输 |
 | `40 QEP_START` | 空 | 空；TIM3 编码器 x4 初始化 |
@@ -49,10 +56,16 @@
 | `72 CAN_TX` | 标识符 `u32`、extended 0/1、长度 0..8、数据 | 空；帧进入发送 FIFO |
 | `73 CAN_RX` | 空 | present=0，或 present=1、标识符 `u32`、extended、长度、数据 |
 | `74 CAN_STATUS` | 空 | ready、TX FIFO 空位、RX FIFO 待取、bus-off、最近错误码、TX/RX 错误计数，各 1 字节 |
+| `75 METRICS` | 空 | 静态 SRAM、按需分配、可分配、栈预留，各 `u16` 小端；主循环忙碌率 `u8`，255 表示首个采样窗口尚未完成 |
+| `76 INTERFACE_UNBIND` | 外设 ID `u8`：1 GPIO、2 I²C、3 I3C、4 SPI、5 QEP、6 UART、7 RS232、8 RS485、9 CAN | 空；协议 1.8 起，设备实际停用后才返回 OK |
 
 `HELLO` 版本 1.4 能力位：bit0 USB、bit1 GPIO、bit2 I²C 主机、bit3 TPLD 加载、bit4 Flash 暂存、bit5 SPI 主机、bit6 QEP、bit7 TTL UART、bit8 RS232、bit9 RS485、bit10 串口寄存器应答、bit11 SPI 从机、bit12 I3C 控制器、bit13 I3C 目标设备、bit14 I²C 软件从机。能力位表示软件路径已实现；当前双板已验证的模式和速率见 README。
 
 版本 1.5 保留以上位，新增 bit15 HDC1080 I²C 目标仿真、bit16 经典 CAN 原始帧。CAN1 接 PB12/PB13 和板载 SN65HVD232，内核时钟选用已运行的 PLL1Q；两板在 125/250/500/1000 kbit/s 各完成 40 帧双向收发。HDC1080 仿真提供寄存器指针读和配置寄存器写，不模拟转换等待时间；详见[GUI 参数文档](ui-profiles.md)。
+
+版本 1.7 新增 bit17 EEPROM 仿真、bit18 设备资源统计。资源统计每秒用 DWT 周期计数器计算主循环忙碌率，**不包括中断执行时间**，不能直接解释为完整 CPU 利用率。按需分配量在选择 HDC1080 或 EEPROM 目标配置时才增加；可用 SRAM 以保留 4 KiB 栈为前提。256 B EEPROM 内容仅驻留 STM32 SRAM，复位后消失；电脑 `.bin` 是重载来源，不使用 STM32 Flash 存 EEPROM 页。16 KiB 及以上通过 `28/29` 交换页数据，电脑镜像为权威副本。16 KiB 压测发现随机读写的间歇性事务失败，大容量模式尚未完成时序验证。
+
+版本 1.8 新增 bit19 确认式外设解绑。命令 `76` 对 SPI、I3C、CAN、串口与 QEP 调用 HAL 停用/DeInit；I²C 释放软件目标端及仿真缓存；GPIO PA0/PA1 回到输入。CLI 只有收到 OK 才清除主机侧绑定状态。设备 USB 产品字符串和 HELLO 名称为 `GMP Peripheral Host`。
 
 UART、RS232、RS485、SPI 和 I3C 目标端共享应用层寄存器帧：请求 `A5 op address length [data] crc8`，`op=0` 读（无 data），`op=1` 写（带 length 字节）；响应 `5A status length [data] crc8`。CRC8 初始 0、多项式 `0x07`，覆盖帧头至数据末字节。每次长度 1..32 字节，地址不允许越过 255。每个物理接口有独立的 256 字节 RAM 寄存器组，复位后清零。C API 的 `gmp_remote_register_read/write` 对 UART/RS232/RS485 也封装了发帧与等候回复；本机串口须配置为透明收发模式。
 

@@ -1,4 +1,4 @@
-# GMP Peripheral ISO Host
+# GMP Peripheral Host
 
 STM32H503CBU6 板载隔离式 USB 外设调试器。此仓库同时保留已验证的 TPLD `led_direct` 和 `pulse_distributor` 演示；调试器固件使用独立的 `bridge` 构建配置。
 
@@ -6,7 +6,7 @@ STM32H503CBU6 板载隔离式 USB 外设调试器。此仓库同时保留已验�
 
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
-| USB CDC ACM | 两板实测 | 设备描述符名称为 **GMP Peripheral ISO Host**，序列号由 STM32 唯一 ID 生成；Windows 使用系统 `usbser.sys`，Linux 使用 `cdc_acm`。 |
+| USB CDC ACM | 两板实测 | 设备描述符名称为 **GMP Peripheral Host**，序列号由 STM32 唯一 ID 生成；Windows 使用系统 `usbser.sys`，Linux 使用 `cdc_acm`。 |
 | 握手、版本、能力和运行状态 | 已实现 | 命令帧含序号、长度和 CRC16。 |
 | GPIO / ADC | 已在当前板卡验证 | GUI 固定显示 PA0、PA1 两行；可选输入/ADC，PA0 还可选开漏输出，低/高实测回读为 0/1。PA1 输出和 DAC 因与 TPLD 共享信号而禁用。PA0 上拉电平实测 ADC 原始值 4093；精度校准待验证。 |
 | I²C 主机 | 两板实测 | PB5/PB6 软件 I²C，共享 TPLD 配置总线，最多 64 字节写、64 字节读。保留 TPLD 地址 0x79。 |
@@ -17,6 +17,9 @@ STM32H503CBU6 板载隔离式 USB 外设调试器。此仓库同时保留已验�
 | I3C2 控制器与目标端 | 两板实测 | 控制器支持 ENTDAA、私有读写；目标端通过事件中断提供 37 字节寄存器应答，重复配置可重新分配动态地址。 |
 | I²C 软件从机 | 两板实测 | PB5 是 I2C1_SMBA 而不是 SDA；用 PB5/PB6 边沿中断处理 7 位地址、寄存器指针、写入及重复起始读取，与软件主机互斥。最高可靠速率尚未测量。 |
 | HDC1080 I²C 目标仿真 | 两板实测 | 协议 1.5 支持 16 位温湿度、配置、厂商/器件 ID；#1 主机读取 #2 仿真值通过。 |
+| 24LC02B 类 EEPROM 仿真 | 两板压力测试通过 | 协议 1.7；绑定时分配 264 B SRAM，256 B 内容可从电脑镜像载入，GUI 每秒将外部 I²C 修改同步回电脑文件；1000 次随机页写、整片校验及复位后重新载入通过。EEPROM 数据不写入 STM32 Flash。 |
+| 16/32/64 KiB EEPROM 页服务 | 实验中 | 镜像保存在电脑，STM32 只分配 144/144/272 B 页缓存。16 KiB 跨页读取已验证，但随机读写压力测试仍有间歇性 I²C 事务失败，暂不作为可靠的通用 EEPROM 从机使用。 |
+| 设备资源监控 | #2 板实测 | GUI 第一页有任务管理器式表格和 60 秒曲线，每 1 秒采样一次；显示主循环忙碌率、静态 SRAM、按需分配、可用空间、栈预留及电脑镜像容量。 |
 | 经典 CAN | 两板实测 | FDCAN1 与板载 SN65HVD232 支持 125/250/500/1000 kbit/s、标准/扩展 ID 和 0..8 字节，四种速率共 160 帧双向通过；CANopen 目前提供帧解析。 |
 | TPLD OTP 烧录 | 不支持 | 当前实现只加载易失性配置；OTP 需要独立的 VPP 条件。 |
 
@@ -53,6 +56,17 @@ Windows 编译主机库和 CLI：
 .\host\dist\bin\gmpctl.exe COM5 tpld upload .\cpld\pulse_distributor\program.hex --reset
 ```
 
+标准 CLI 入口已经加入，保留上面的旧命令以便双板回归：
+
+```powershell
+.\host\dist\bin\gmpctl.exe list
+.\host\dist\bin\gmpctl.exe --port COM4 i2c config role=slave address=0x50 profile=hdc1080
+.\host\dist\bin\gmpctl.exe --port COM4 i2c bind
+.\host\dist\bin\gmpctl.exe --port COM4 save config > config.json
+```
+
+完整参数、JSON 格式及尚未提供统一 RX 队列的接口见 [CLI 标准](docs/cli-standard.md)。协议 1.8 提供所有九类外设的确认式解绑。
+
 Linux：
 
 ```sh
@@ -67,9 +81,9 @@ python -m pip install -r gui/requirements.txt
 python gui/app.py
 ```
 
-GUI 第一页可连接、校验设备、选择 InterConnect Studio `program.hex`、上传并校验镜像、查看启动状态和重启。GPIO 页仅列 PA0/PA1，列出模式、设定和当前值。I²C、I3C、SPI、QEP、UART、RS232、RS485 各有独立标签页，可配置各自支持的角色；SPI 页标明各模式的主机实现。GUI 数据输入使用十六进制字节（空格分隔）。
+GUI 第一页可连接、校验设备、选择 InterConnect Studio `program.hex`、上传并校验镜像、查看启动状态和重启。资源表格与曲线在连接协议 1.7 设备后每秒刷新；CPU 数值是主循环忙碌率，不包括中断执行时间。GPIO 页仅列 PA0/PA1，列出模式、设定和当前值。I²C、I3C、SPI、QEP、UART、RS232、RS485 各有独立标签页，可配置各自支持的角色；SPI 页标明各模式的主机实现。GUI 数据输入使用十六进制字节（空格分隔）。
 
-新版 GUI 还将各物理接口分为参数配置与原始操作页，提供可编辑参数绑定、逐项/批量查询、读写初值以及主机/从机 JSON 导入导出。内置 HDC1080 I²C 仿真、Modbus RTU、AT、CAN 原始帧和 CANopen 解析示例；具体能在硬件上执行的范围见[参数配置说明](docs/ui-profiles.md)。两板现已运行协议 1.5；经典 CAN 四种速率共 160 帧双向实测通过，HDC1080 仿真查询通过。
+新版 GUI 还将各物理接口分为参数配置与原始操作页，提供可编辑参数绑定、逐项/批量查询、读写初值以及主机/从机 JSON 导入导出。内置 HDC1080 I²C 仿真、EEPROM、Modbus RTU、AT、CAN 原始帧和 CANopen 解析示例；具体能在硬件上执行的范围见[参数配置说明](docs/ui-profiles.md)。#1 仍运行协议 1.5，#2 已更新到协议 1.8；经典 CAN 四种速率共 160 帧双向实测通过，HDC1080 仿真查询通过。
 
 双板连接后，主机端可用 `gmpctl <port> remote spi 0 get 0x10 3`、`remote i3c 0x30 get 0x10 3`、`remote i2c 0x42 get 0x10 3` 或 `remote uart 0 get 0x10 3` 读另一板的寄存器；对应的 `set` 命令写入。SPI 主机需先 `spi config`，I3C 控制器需先 `i3c controller`、`i3c daa`，串口主机需先配置为 `stream`。GUI 的六个通信页面都提供远端寄存器操作。
 
@@ -85,7 +99,9 @@ GUI 第一页可连接、校验设备、选择 InterConnect Studio `program.hex`
 
 首版使用 CDC ACM，设备描述符类/子类为 `02/02`。Windows 系统可按兼容 ID 自动绑定 `usbser.sys`，不必附带专用 INF；Linux 的常规 CDC ACM 驱动提供 `/dev/ttyACM*`。参见 [Microsoft USB serial driver 文档](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-driver-installation-based-on-compatible-ids)。
 
-Windows 设备管理器的串口友好名称通常仍显示为“USB 串行设备 (COMx)”；USB 总线报告的产品字符串是“GMP Peripheral ISO Host”，CLI 和 GUI 握手也校验此名称。若产品化时要求设备管理器友好名称也一致，可以提供仅指定名称和系统 `usbser.sys` 的签名 INF。
+Windows 设备管理器的串口友好名称当前仍显示为“USB 串行设备 (COMx)”；#2 板 USB 产品字符串和协议 HELLO 已改为“GMP Peripheral Host”，#1 板保留原固件。CLI 和 GUI 读取并显示握手名称。要让 Windows 端口友好名称也一致，需要匹配硬件 ID 的签名 INF；当前原型仍使用系统 `usbser.sys` 自动绑定。
+
+CDC+HID 复合描述符、64 字节 HID 报告和 Windows 签名 INF 的具体方案见 [USB 传输设计](docs/usb-transport.md)。FreeRTOS 任务划分与 32 KiB SRAM 预算见 [任务模型](docs/rtos-architecture.md)；目前运行固件仍是已验证的裸机主循环。
 
 | 选择 | 优点 | 代价 |
 | --- | --- | --- |
@@ -127,6 +143,6 @@ UART 是异步点对点链路，表中的“从机”指应用层收到寄存器
 
 详见 [协议文档](docs/protocol.md)。协议版本 1 使用一个请求对应一个响应；不支持的命令返回 `UNSUPPORTED`。后续外设通过新的命令号、能力位和文档版本加入，旧主机程序可以先查询 `HELLO` 的能力位。
 
-双板验证：#1 由 J-Link 调试，CDC 为 `COM5`；#2 由 ST-Link V3 调试，CDC 为 `COM4`。两板握手均为协议 `1.5`、能力 `0x1FFFF`。`scripts/two-board-smoke.ps1 -MasterPort COM5 -TargetPort COM4 -Iterations 20` 对 UART、RS232、RS485、I²C、SPI 四种模式、I3C 各完成 20 轮远端读写，全部通过。`python scripts/two-board-profile-smoke.py COM5 COM4 --iterations 20` 对经典 CAN 四种速率共完成 160 帧双向收发，并验证 HDC1080 仿真。#1 TPLD 镜像槽更新前后 SHA-256 相同，generation `2`、CRC32 `B032BD7E`；#2 没有 TPLD 镜像，未执行 TPLD 烧录。Linux USB 联机、QEP 外部信号和 CAN FD 仍待验证。
+双板验证：#1 由 J-Link 调试，CDC 为 `COM5`，协议 1.5；#2 由 ST-Link V3 调试，CDC 为 `COM4`，协议 1.8。`scripts/two-board-smoke.ps1 -MasterPort COM5 -TargetPort COM4 -Iterations 20` 对 UART、RS232、RS485、I²C、SPI 四种模式、I3C 各完成 20 轮远端读写，全部通过。`python scripts/two-board-profile-smoke.py COM5 COM4 --iterations 20` 对经典 CAN 四种速率共完成 160 帧双向收发，并验证 HDC1080 仿真。协议 1.7 起的 256 B EEPROM 又经 1000 次随机页写、整片校验、复位重载通过；16 KiB 页服务仍有间歇性 I²C 失败。#1 TPLD 镜像槽更新前后 SHA-256 相同，generation `2`、CRC32 `B032BD7E`；#2 没有 TPLD 镜像，未执行 TPLD 烧录。Linux USB 联机、QEP 外部信号和 CAN FD 仍待验证。
 
 USB 设备栈使用 ST 官方 `stm32-mw-usb-device` 的 Core/CDC 文件，来源修订 `2df324bd60d4b0bb27404fd70b1c089b467f0e09`，授权文本见 [LICENSE](third_party/stm32_usb_device/LICENSE.md)。

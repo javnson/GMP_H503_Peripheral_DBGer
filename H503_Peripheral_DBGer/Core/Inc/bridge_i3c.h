@@ -5,6 +5,7 @@
 /* role 0=controller, 1=target. A target register request uses a fixed
  * 37-byte private write followed by a 37-byte private read. */
 int BridgeI3c_Config(uint8_t role);
+int BridgeI3c_Disable(void);
 int BridgeI3c_Assign(uint8_t base_address, uint8_t maximum,
                      uint8_t *addresses, uint8_t *actual);
 int BridgeI3c_Transfer(uint8_t address, const uint8_t *tx, uint8_t tx_length,

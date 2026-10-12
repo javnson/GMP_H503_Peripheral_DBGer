@@ -26,9 +26,21 @@ class InterfaceStatus(c.Structure):
                 ("serial_ready_mask", c.c_uint8)]
 
 
+class Metrics(c.Structure):
+    _fields_ = [("static_bytes", c.c_uint16), ("allocated_bytes", c.c_uint16),
+                ("available_bytes", c.c_uint16), ("stack_reserve_bytes", c.c_uint16),
+                ("cpu_percent", c.c_uint8)]
+
+
 class CanStatus(c.Structure):
     _fields_ = [(name, c.c_uint8) for name in
                 ("ready", "tx_free", "rx_pending", "bus_off", "last_error", "tx_error", "rx_error")]
+
+
+class EepromEvent(c.Structure):
+    _fields_ = [("kind", c.c_uint8), ("sequence", c.c_uint8),
+                ("page", c.c_uint16), ("page_size", c.c_uint8),
+                ("mask", c.c_uint8 * 16), ("data", c.c_uint8 * 128)]
 
 
 class Api:
@@ -51,6 +63,8 @@ class Api:
         self.lib.gmp_status_get.restype = c.c_int
         self.lib.gmp_interface_status_get.argtypes = [c.c_void_p, c.POINTER(InterfaceStatus)]
         self.lib.gmp_interface_status_get.restype = c.c_int
+        self.lib.gmp_metrics_get.argtypes = [c.c_void_p, c.POINTER(Metrics)]
+        self.lib.gmp_metrics_get.restype = c.c_int
         self.lib.gmp_load_tpld_hex.argtypes = [c.c_char_p, c.POINTER(c.c_uint8)]
         self.lib.gmp_load_tpld_hex.restype = c.c_int
         self.lib.gmp_tpld_upload.argtypes = [c.c_void_p, c.POINTER(c.c_uint8), c.c_uint8]
@@ -71,6 +85,13 @@ class Api:
             "gmp_i2c_target_config": [c.c_void_p, c.c_uint8, c.c_uint8],
             "gmp_i2c_target_profile": [c.c_void_p, c.c_uint8, c.c_uint8, c.c_uint16],
             "gmp_i2c_target_word": [c.c_void_p, c.c_uint8, c.POINTER(c.c_uint16)],
+            "gmp_i2c_eeprom_status": [c.c_void_p, c.POINTER(c.c_uint8), c.POINTER(c.c_uint8)],
+            "gmp_i2c_eeprom_read": [c.c_void_p, c.c_uint8, c.POINTER(c.c_uint8), c.c_uint8],
+            "gmp_i2c_eeprom_write": [c.c_void_p, c.c_uint8, c.POINTER(c.c_uint8), c.c_uint8],
+            "gmp_i2c_eeprom_config": [c.c_void_p, c.c_uint8, c.c_uint8],
+            "gmp_i2c_eeprom_event": [c.c_void_p, c.POINTER(EepromEvent)],
+            "gmp_i2c_eeprom_reply": [c.c_void_p, c.POINTER(EepromEvent), c.POINTER(c.c_uint8)],
+            "gmp_i2c_eeprom_invalidate": [c.c_void_p],
             "gmp_can_config": [c.c_void_p, c.c_uint32],
             "gmp_can_send": [c.c_void_p, c.c_uint32, c.c_uint8, c.POINTER(c.c_uint8), c.c_uint8],
             "gmp_can_receive": [c.c_void_p, c.POINTER(c.c_uint8), c.POINTER(c.c_uint32),
@@ -103,6 +124,7 @@ class Api:
         self.lib.gmp_error_string.argtypes = [c.c_int]
         self.lib.gmp_error_string.restype = c.c_char_p
         self.handle = c.c_void_p()
+        self.eeprom_image_size = 0
 
     def check(self, rc):
         if rc:
@@ -131,6 +153,11 @@ class Api:
     def interface_status(self):
         value = InterfaceStatus()
         self.check(self.lib.gmp_interface_status_get(self.handle, c.byref(value)))
+        return value
+
+    def metrics(self):
+        value = Metrics()
+        self.check(self.lib.gmp_metrics_get(self.handle, c.byref(value)))
         return value
 
     def upload(self, path, autoload):
@@ -179,6 +206,34 @@ class Api:
         value = c.c_uint16()
         self.check(self.lib.gmp_i2c_target_word(self.handle, register, c.byref(value)))
         return value.value
+
+    def i2c_eeprom_status(self):
+        busy, error = c.c_uint8(), c.c_uint8()
+        self.check(self.lib.gmp_i2c_eeprom_status(self.handle, c.byref(busy), c.byref(error)))
+        return bool(busy.value), bool(error.value)
+
+    def i2c_eeprom_read(self, address, count):
+        result = (c.c_uint8 * count)()
+        self.check(self.lib.gmp_i2c_eeprom_read(self.handle, address, result, count))
+        return bytes(result)
+
+    def i2c_eeprom_write(self, address, data):
+        self.check(self.lib.gmp_i2c_eeprom_write(self.handle, address,
+                                                 self._bytes(data), len(data)))
+
+    def i2c_eeprom_config(self, capacity_log2, page_size):
+        self.check(self.lib.gmp_i2c_eeprom_config(self.handle, capacity_log2, page_size))
+
+    def i2c_eeprom_event(self):
+        event = EepromEvent()
+        self.check(self.lib.gmp_i2c_eeprom_event(self.handle, c.byref(event)))
+        return event
+
+    def i2c_eeprom_reply(self, event, data=b""):
+        self.check(self.lib.gmp_i2c_eeprom_reply(self.handle, c.byref(event), self._bytes(data)))
+
+    def i2c_eeprom_invalidate(self):
+        self.check(self.lib.gmp_i2c_eeprom_invalidate(self.handle))
 
     def can_config(self, bitrate):
         self.check(self.lib.gmp_can_config(self.handle, bitrate))

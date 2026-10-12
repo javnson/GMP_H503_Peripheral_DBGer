@@ -46,7 +46,7 @@ static uint8_t *make_string(const char *s, uint16_t *length)
 static uint8_t *manufacturer(USBD_SpeedTypeDef s, uint16_t *n)
 { (void)s; return make_string("GMP", n); }
 static uint8_t *product(USBD_SpeedTypeDef s, uint16_t *n)
-{ (void)s; return make_string("GMP Peripheral ISO Host", n); }
+{ (void)s; return make_string("GMP Peripheral Host", n); }
 static uint8_t *serial(USBD_SpeedTypeDef s, uint16_t *n)
 {
   static const char hex[] = "0123456789ABCDEF";
@@ -60,9 +60,9 @@ static uint8_t *serial(USBD_SpeedTypeDef s, uint16_t *n)
   return make_string(id, n);
 }
 static uint8_t *configuration(USBD_SpeedTypeDef s, uint16_t *n)
-{ (void)s; return make_string("Bridge CDC", n); }
+{ (void)s; return make_string("GMP Peripheral Host CDC", n); }
 static uint8_t *interface(USBD_SpeedTypeDef s, uint16_t *n)
-{ (void)s; return make_string("Bridge Control", n); }
+{ (void)s; return make_string("GMP Peripheral Host Control", n); }
 static USBD_DescriptorsTypeDef descriptors = {
   device_desc, lang_desc, manufacturer, product, serial,
   configuration, interface
@@ -77,7 +77,8 @@ static int8_t cdc_init(void)
 static int8_t cdc_deinit(void) { return USBD_OK; }
 static int8_t cdc_control(uint8_t cmd, uint8_t *buf, uint16_t len)
 {
-  static uint8_t line_coding[7] = {0x00, 0xC2, 0x01, 0, 0, 0, 8};
+  /* 921600 8N1 is the advertised CDC line coding; USB FS speed is separate. */
+  static uint8_t line_coding[7] = {0x00, 0x10, 0x0E, 0, 0, 0, 8};
   if (cmd == CDC_SET_LINE_CODING && len == 7U) memcpy(line_coding, buf, 7);
   if (cmd == CDC_GET_LINE_CODING && len == 7U) memcpy(buf, line_coding, 7);
   return USBD_OK;

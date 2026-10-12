@@ -1,6 +1,6 @@
-"""GMP Peripheral ISO Host desktop GUI."""
+"""GMP Peripheral Host desktop GUI."""
 import sys
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFormLayout
     QSpinBox, QScrollArea)
 from gmp_api import Api
 from profile_ui import wrap_interfaces
+from resource_view import ResourceChart, ResourceTable
 
 
 class UploadWorker(QThread):
@@ -29,7 +30,7 @@ class UploadWorker(QThread):
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GMP Peripheral ISO Host")
+        self.setWindowTitle("GMP Peripheral Host")
         if sys.platform == "win32": self.setFont(QFont("Microsoft YaHei", 9))
         self.resize(1150, 740)
         self.setStyleSheet("""
@@ -69,6 +70,15 @@ class Window(QMainWindow):
         layout.addWidget(self.state)
         self.interface_state = QLabel("外设状态：—")
         layout.addWidget(self.interface_state)
+        self.resource_hint = QLabel("资源监控：连接协议 1.7 设备后，每秒记录 CPU 与 RAM 使用情况。")
+        layout.addWidget(self.resource_hint)
+        self.resource_table = ResourceTable()
+        layout.addWidget(self.resource_table)
+        self.resource_chart = ResourceChart()
+        layout.addWidget(self.resource_chart)
+        self.resource_timer = QTimer(self)
+        self.resource_timer.setInterval(1000)
+        self.resource_timer.timeout.connect(self.poll_resources)
         refresh = QPushButton("刷新状态")
         refresh.clicked.connect(self.refresh)
         layout.addWidget(refresh)
@@ -92,7 +102,10 @@ class Window(QMainWindow):
         action.addWidget(reset); layout.addLayout(action)
         self.message = QLabel("")
         layout.addWidget(self.message); layout.addStretch()
-        tabs.addTab(connection, "设备与 TPLD")
+        connection_scroll = QScrollArea()
+        connection_scroll.setWidgetResizable(True)
+        connection_scroll.setWidget(connection)
+        tabs.addTab(connection_scroll, "设备与 TPLD")
 
         self.add_gpio_page(tabs)
         self.add_i2c_page(tabs)
@@ -422,17 +435,37 @@ class Window(QMainWindow):
         self.add_scroll_tab(tabs, page, name)
 
     def alert(self, error):
-        QMessageBox.warning(self, "GMP Peripheral ISO Host", str(error))
+        QMessageBox.warning(self, "GMP Peripheral Host", str(error))
 
     def connect_device(self):
         try:
             info = self.api.connect(self.port.text().strip())
+            self.resource_timer.stop()
             self.identity.setText(f"{info.name.decode()} | 协议 {info.protocol_major}.{info.protocol_minor} | "
                                   f"功能 0x{info.capabilities:08X}")
             self.refresh()
             self.refresh_pins()
+            if (info.protocol_major, info.protocol_minor) >= (1, 7):
+                self.poll_resources()
+                self.resource_timer.start()
+            else:
+                self.resource_hint.setText("资源监控需要协议 1.7 固件；当前设备不提供该数据。")
         except Exception as error:
             self.alert(error)
+
+    def poll_resources(self):
+        if not self.api.handle:
+            self.resource_timer.stop()
+            return
+        try:
+            metrics = self.api.metrics()
+            self.resource_table.update_metrics(metrics, self.api.eeprom_image_size)
+            self.resource_chart.add_sample(metrics.cpu_percent,
+                                           metrics.static_bytes + metrics.allocated_bytes)
+            self.resource_hint.setText("每秒采样一次；蓝线为主循环忙碌率，绿线为 RAM 占用率。")
+        except Exception as error:
+            self.resource_timer.stop()
+            self.resource_hint.setText(f"资源监控已暂停：{error}")
 
     def refresh(self):
         try:
@@ -479,6 +512,7 @@ class Window(QMainWindow):
         if self.worker and self.worker.isRunning():
             event.ignore(); self.alert("请等待镜像写入完成")
             return
+        self.resource_timer.stop()
         self.api.close(); event.accept()
 
 

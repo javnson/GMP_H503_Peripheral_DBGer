@@ -19,7 +19,7 @@ gmpctl <A> interfaces
 gmpctl <B> interfaces
 ```
 
-当前两块板报告协议 1.5、能力 `0x1FFFF`。各总线可保持连接，测试时分别配置其角色。
+当前 #1 板报告协议 1.5、能力 `0x1FFFF`；#2 板报告协议 1.8、能力 `0xFFFFF`。各总线可保持连接，测试时分别配置其角色。
 
 ## SPI2
 
@@ -93,6 +93,18 @@ python scripts/two-board-profile-smoke.py COM5 COM4 --iterations 20
 ```
 
 此脚本在 125/250/500/1000 kbit/s 对每种速率发送 40 帧双向数据，覆盖标准/扩展 ID 与 0/1/8 字节。还发送一帧 CANopen TPDO1 用参数预设解析，随后让 B 以 `0x40` 仿真 HDC1080，由 A 经 I²C 读取温度、湿度、配置和 ID。2026-10-12 实测这 160 帧 CAN、1 帧 TPDO1 解析和 5 项 I²C 查询全部通过；两板错误计数为零。
+
+## EEPROM 与资源页（协议 1.7）
+
+#2 板已运行协议 1.8，#1 板保持协议 1.5。小容量 EEPROM 压测命令：
+
+```powershell
+python scripts/two-board-eeprom-stress.py COM5 COM4 --iterations 1000
+```
+
+测试覆盖 256 B 全片初始化、8 B 页内写回绕、连续读地址 `0xFF→0x00`、1000 次随机写、每 100 次整片校验，以及 #2 板 MCU 复位后 SRAM 清空和电脑重新上传。实测 1034 次页写、2066 次写周期忙 NACK；该数据未写入 STM32 Flash。
+
+大容量镜像开发压测使用 `python scripts/two-board-eeprom-host-stress.py COM5 COM4 --iterations 1000`。程序在 `tmp/` 创建 16 KiB 电脑镜像，绑定后 #2 板分配 144 B SRAM 页缓冲；随机读写目前偶发 I²C 事务失败，该脚本会以非零退出码报告。跨页首位时序已修正，但尚未达到可宣称可靠 EEPROM 仿真的程度。GUI 第一页连接 #2 板后每 1 秒采样资源：实测静态 SRAM 8728 B，16 KiB 页缓存绑定后按需分配 144 B，可分配 19800 B，栈预留 4096 B。曲线保留最近 60 个采样点。
 
 ## 记录与故障定位
 

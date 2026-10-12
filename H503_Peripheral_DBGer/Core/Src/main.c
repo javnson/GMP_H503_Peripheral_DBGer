@@ -24,6 +24,7 @@
 #include "tpld2001.h"
 #ifdef H503_BRIDGE
 #include "bridge.h"
+#include "bridge_metrics.h"
 #endif
 
 /* USER CODE END Includes */
@@ -226,7 +227,10 @@ int main(void)
   while (1)
   {
 #ifdef H503_BRIDGE
+    BridgeMetrics_PollBegin();
     Bridge_Poll();
+    BridgeMetrics_PollEnd();
+    BridgeMetrics_Idle();
 #else
     if (tpld_status == TPLD_OK) {
       uint32_t counter = __HAL_TIM_GET_COUNTER(&htim2);
