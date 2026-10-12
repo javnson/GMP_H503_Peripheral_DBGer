@@ -22,6 +22,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "tpld2001.h"
+#ifdef H503_BRIDGE
+#include "bridge.h"
+#endif
 
 /* USER CODE END Includes */
 
@@ -202,11 +205,15 @@ int main(void)
   /* The software I2C programmer uses GPIO only. */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
+#ifdef H503_BRIDGE
+  Bridge_Init();
+#else
   TPLD_Pins_Safe_Init();
   tpld_status = TPLD2001_Load(&found_address);
   tpld_i2c_address = found_address;
   if (tpld_status == TPLD_OK && TPLD_Start_10Hz() != HAL_OK)
     tpld_status = TPLD_PWM_FAILED;
+#endif
 
   /* USER CODE END 2 */
 
@@ -218,6 +225,9 @@ int main(void)
 #endif
   while (1)
   {
+#ifdef H503_BRIDGE
+    Bridge_Poll();
+#else
     if (tpld_status == TPLD_OK) {
       uint32_t counter = __HAL_TIM_GET_COUNTER(&htim2);
 #ifdef TPLD_PULSE_DISTRIBUTOR
@@ -250,6 +260,7 @@ int main(void)
 #endif
     }
     HAL_Delay(1);
+#endif
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

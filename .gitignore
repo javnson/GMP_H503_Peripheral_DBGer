@@ -11,6 +11,13 @@ H503_Peripheral_DBGer/MDK-ARM/RTE/
 __pycache__/
 *.py[cod]
 tmp/
+host/build/
+host/dist/
+host/build-linux/
+host/dist-linux/
+gui/.venv/
+.venv/
+.pytest_cache/
 
 # InterConnect Studio local work files; keep .syscfg, .hex and simulation source
 *.syscfg.user

@@ -1,5 +1,7 @@
 # H503 + TPLD2001：IO12 输入 10 Hz 方波
 
+正式调试器固件及 USB 主机工具见 [GMP Peripheral ISO Host](README.md)；本文仅说明独立的 `led_direct` 演示配置。
+
 另见 [六拍脉冲分配器例程](cpld/pulse_distributor/README.md)：同样使用 PA0 的 10 Hz 时钟，输出 A/B/C 三路相位并由板上按键控制方向。
 
 固件上电后用 PB5/PB6 软件 I²C 将 `cpld/led_direct/program.hex` 的 512 字节配置加载到板载 TPLD2001，并逐字节回读验证。加载成功后，H503 的 TIM2 CH1 从 PA0 输出 10 Hz、50% 占空比方波，送入 TPLD IO12。`led_direct` 工程将 IO12 直通到 IO11；H503 从 PA1 采样回读，同时该工程还驱动板上的 RGB LED 逻辑。

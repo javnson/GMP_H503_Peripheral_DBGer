@@ -1,6 +1,6 @@
 param(
     [string]$CubeFwRoot = (Join-Path $env:USERPROFILE 'STM32Cube/Repository/STM32Cube_FW_H5_V1.6.0'),
-    [ValidateSet('led_direct', 'pulse_distributor')]
+    [ValidateSet('led_direct', 'pulse_distributor', 'bridge')]
     [string]$Example = 'led_direct'
 )
 
@@ -11,10 +11,10 @@ $projectFile = Join-Path $projectDir 'H503_Peripheral_DBGer.uvprojx'
 $template = Join-Path $CubeFwRoot 'Projects/NUCLEO-H503RB/Templates/STM32CubeIDE'
 $startup = Join-Path $template 'Example/Startup/startup_stm32h503rbtx.s'
 $linker = Join-Path $template 'STM32H503RBTX_FLASH.ld'
-$name = "H503_TPLD_${Example}_10Hz"
+$name = if ($Example -eq 'bridge') { 'GMP_Peripheral_ISO_Host' } else { "H503_TPLD_${Example}_10Hz" }
 $elf = Join-Path $repo "tmp/$name.elf"
 $hex = Join-Path $repo "firmware/$name.hex"
-$exampleDefine = if ($Example -eq 'pulse_distributor') { @('-DTPLD_PULSE_DISTRIBUTOR') } else { @() }
+$exampleDefine = if ($Example -eq 'pulse_distributor') { @('-DTPLD_PULSE_DISTRIBUTOR') } elseif ($Example -eq 'bridge') { @('-DH503_BRIDGE') } else { @() }
 
 foreach ($path in @($projectFile, $startup, $linker)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Missing build input: $path" }
@@ -27,6 +27,14 @@ if (-not (Get-Command arm-none-eabi-gcc -ErrorAction SilentlyContinue)) {
 $sources = @($project.Project.Targets.Target.Groups.Group.Files.File |
     Where-Object { $_.FilePath -like '*.c' } |
     ForEach-Object { [IO.Path]::GetFullPath((Join-Path $projectDir $_.FilePath)) })
+if ($Example -eq 'bridge') {
+    $sources += @('bridge.c', 'bridge_usb.c', 'bridge_store.c') |
+        ForEach-Object { Join-Path $repo "H503_Peripheral_DBGer/Core/Src/$_" }
+    $sources += @('usbd_core.c', 'usbd_ctlreq.c', 'usbd_ioreq.c') |
+        ForEach-Object { Join-Path $repo "third_party/stm32_usb_device/Core/Src/$_" }
+    $sources += Join-Path $repo 'third_party/stm32_usb_device/Class/CDC/Src/usbd_cdc.c'
+    $linker = Join-Path $repo 'firmware/bridge_flash.ld'
+}
 $includeDirs = @(
     'Core/Inc',
     'Drivers/STM32H5xx_HAL_Driver/Inc',
@@ -34,6 +42,10 @@ $includeDirs = @(
     'Drivers/CMSIS/Device/ST/STM32H5xx/Include',
     'Drivers/CMSIS/Include'
 ) | ForEach-Object { '-I' + (Join-Path (Join-Path $repo 'H503_Peripheral_DBGer') $_) }
+if ($Example -eq 'bridge') {
+    $includeDirs += '-I' + (Join-Path $repo 'third_party/stm32_usb_device/Core/Inc')
+    $includeDirs += '-I' + (Join-Path $repo 'third_party/stm32_usb_device/Class/CDC/Inc')
+}
 
 New-Item -ItemType Directory -Force (Split-Path $elf), (Split-Path $hex) | Out-Null
 & arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -mfloat-abi=soft -Os -g3 `

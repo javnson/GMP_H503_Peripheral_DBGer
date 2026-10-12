@@ -148,10 +148,39 @@ static uint8_t unlock_key(uint8_t address, uint8_t key)
   return ok;
 }
 
-TPLD_Status TPLD2001_Load(uint8_t *found_address)
+int TPLD2001_I2CTransfer(uint8_t address, const uint8_t *tx, uint8_t tx_size,
+                         uint8_t *rx, uint8_t rx_size)
+{
+  uint8_t ok = 1;
+  if (address < 0x08U || address > 0x77U || tx_size > 64U || rx_size > 64U ||
+      (tx_size && tx == NULL) || (rx_size && rx == NULL)) return 0;
+  i2c_init();
+  if (tx_size || !rx_size) {
+    ok = i2c_start() && write_byte((uint8_t)(address << 1));
+    for (uint8_t i = 0; i < tx_size && ok; ++i) ok = write_byte(tx[i]);
+  }
+  if (rx_size && ok) {
+    ok = i2c_start() && write_byte((uint8_t)((address << 1) | 1U));
+    for (uint8_t i = 0; i < rx_size && ok; ++i) {
+      uint8_t bit;
+      rx[i] = 0;
+      for (uint8_t b = 0; b < 8U && ok; ++b) {
+        ok = read_bit(&bit);
+        rx[i] = (uint8_t)((rx[i] << 1) | bit);
+      }
+      if (ok) ok = write_bit((uint8_t)(i + 1U == rx_size));
+    }
+  }
+  i2c_stop();
+  return ok;
+}
+
+TPLD_Status TPLD2001_LoadImage(const uint8_t *image, uint16_t size,
+                              uint8_t *found_address)
 {
   static const uint8_t keys[4] = {0xB9, 0x3E, 0xAF, 0x58};
   uint8_t address = 0, msb, lsb, value;
+  if (image == NULL || size != TPLD2001_IMAGE_SIZE) return TPLD_WRITE_FAILED;
   if (found_address != NULL) *found_address = 0;
   i2c_init();
 
@@ -179,11 +208,11 @@ TPLD_Status TPLD2001_Load(uint8_t *found_address)
     return TPLD_MODE_FAILED;
 
   /* Single-byte accesses avoid dependence on the auto-increment setting. */
-  for (uint16_t i = 0; i < TPLD2001_IMAGE_SIZE; ++i) {
+  for (uint16_t i = 0; i < size; ++i) {
     uint16_t reg = TPLD_CONFIG_START + i;
-    if (!write_register(address, reg, tpld2001_image[i]))
+    if (!write_register(address, reg, image[i]))
       return TPLD_WRITE_FAILED;
-    if (!read_register(address, reg, &value) || value != tpld2001_image[i])
+    if (!read_register(address, reg, &value) || value != image[i])
       return TPLD_VERIFY_FAILED;
   }
 
@@ -192,4 +221,10 @@ TPLD_Status TPLD2001_Load(uint8_t *found_address)
   if (!write_register(address, TPLD_MODE_REGISTER, 0x00U))
     return TPLD_ACTIVATE_FAILED;
   return TPLD_OK;
+}
+
+TPLD_Status TPLD2001_Load(uint8_t *found_address)
+{
+  return TPLD2001_LoadImage(tpld2001_image, TPLD2001_IMAGE_SIZE,
+                            found_address);
 }
