@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "HDC1080 温湿度传感器读取",
+  "interface": "i2c",
+  "role": "master",
+  "protocol": "hdc1080",
+  "settings": {"address": 64},
+  "parameters": [
+    {"name": "温度", "register": 0, "type": "u16", "endian": "big", "scale": 0.0025177001953125, "offset": -40, "unit": "°C", "access": "r"},
+    {"name": "相对湿度", "register": 1, "type": "u16", "endian": "big", "scale": 0.00152587890625, "offset": 0, "unit": "%RH", "access": "r"},
+    {"name": "配置字", "register": 2, "type": "u16", "endian": "big", "access": "r"},
+    {"name": "厂商 ID", "register": 254, "type": "u16", "endian": "big", "access": "r"},
+    {"name": "器件 ID", "register": 255, "type": "u16", "endian": "big", "access": "r"}
+  ]
+}

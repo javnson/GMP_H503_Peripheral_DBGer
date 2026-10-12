@@ -1,0 +1,9 @@
+{
+  "schema": 1, "name": "QEP 编码器状态", "interface": "qep", "role": "master",
+  "protocol": "raw", "settings": {},
+  "parameters": [
+    {"name": "位置", "source": "position", "type": "i32", "access": "r"},
+    {"name": "索引电平", "source": "index", "type": "u8", "access": "r"},
+    {"name": "递减方向", "source": "direction", "type": "u8", "access": "r"}
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "schema": 1, "name": "I²C 原始写后读", "interface": "i2c", "role": "master",
+  "protocol": "raw", "settings": {"address": 66},
+  "parameters": [{"name": "写指针并读两字节", "request": "00", "receive": 2, "type": "u16", "access": "r"}]
+}

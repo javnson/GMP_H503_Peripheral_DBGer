@@ -48,7 +48,17 @@ static uint8_t *manufacturer(USBD_SpeedTypeDef s, uint16_t *n)
 static uint8_t *product(USBD_SpeedTypeDef s, uint16_t *n)
 { (void)s; return make_string("GMP Peripheral ISO Host", n); }
 static uint8_t *serial(USBD_SpeedTypeDef s, uint16_t *n)
-{ (void)s; return make_string("H503-DEV-01", n); }
+{
+  static const char hex[] = "0123456789ABCDEF";
+  char id[30] = "H503-";
+  uint32_t words[3] = {HAL_GetUIDw0(), HAL_GetUIDw1(), HAL_GetUIDw2()};
+  (void)s;
+  for (uint8_t word = 0; word < 3U; ++word)
+    for (uint8_t digit = 0; digit < 8U; ++digit)
+      id[5U + word * 8U + digit] = hex[(words[word] >> (28U - digit * 4U)) & 0xFU];
+  id[29] = '\0';
+  return make_string(id, n);
+}
 static uint8_t *configuration(USBD_SpeedTypeDef s, uint16_t *n)
 { (void)s; return make_string("Bridge CDC", n); }
 static uint8_t *interface(USBD_SpeedTypeDef s, uint16_t *n)

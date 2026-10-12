@@ -20,6 +20,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32h5xx_it.h"
+#ifdef H503_BRIDGE
+#include "bridge_peripheral.h"
+#include "bridge_i3c.h"
+#include "bridge_i2c_target.h"
+#endif
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -199,5 +204,12 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+#ifdef H503_BRIDGE
+void SPI2_IRQHandler(void) { BridgeSpi_IrqHandler(); }
+void I3C2_EV_IRQHandler(void) { BridgeI3c_EventIrq(); }
+void I3C2_ER_IRQHandler(void) { BridgeI3c_ErrorIrq(); }
+void EXTI5_IRQHandler(void) { BridgeI2cTarget_IrqSda(); }
+void EXTI6_IRQHandler(void) { BridgeI2cTarget_IrqScl(); }
+#endif
 
 /* USER CODE END 1 */

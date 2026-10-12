@@ -1,0 +1,8 @@
+{
+  "schema": 1, "name": "串口寄存器应答", "interface": "uart", "role": "slave",
+  "protocol": "bridge-register", "settings": {"baud": 115200},
+  "parameters": [
+    {"name": "状态", "register": 16, "type": "u8", "access": "rw", "value": 1},
+    {"name": "计数", "register": 17, "type": "u16", "endian": "little", "access": "rw", "value": 1234}
+  ]
+}

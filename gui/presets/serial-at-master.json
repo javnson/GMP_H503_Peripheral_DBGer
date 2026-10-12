@@ -1,0 +1,5 @@
+{
+  "schema": 1, "name": "AT 指令查询", "interface": "uart", "role": "master",
+  "protocol": "at", "settings": {"baud": 115200},
+  "parameters": [{"name": "基本应答", "command": "AT", "type": "u8", "access": "r"}]
+}

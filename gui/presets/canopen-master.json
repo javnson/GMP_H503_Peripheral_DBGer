@@ -1,0 +1,8 @@
+{
+  "schema": 1, "name": "CANopen TPDO1 解析", "interface": "can", "role": "master",
+  "protocol": "canopen", "settings": {"nominal_bitrate": 500000},
+  "parameters": [
+    {"name": "节点 1 状态", "can_id": 385, "byte_offset": 0, "type": "u16", "endian": "little", "access": "r"},
+    {"name": "节点 1 计数", "can_id": 385, "byte_offset": 2, "type": "u32", "endian": "little", "access": "r"}
+  ]
+}

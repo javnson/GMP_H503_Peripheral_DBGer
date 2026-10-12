@@ -1,6 +1,13 @@
 #include "bridge.h"
 #include "bridge_store.h"
 #include "bridge_usb.h"
+#include "bridge_gpio.h"
+#include "bridge_peripheral.h"
+#include "bridge_serial.h"
+#include "bridge_registers.h"
+#include "bridge_i3c.h"
+#include "bridge_i2c_target.h"
+#include "bridge_can.h"
 #include "tpld2001.h"
 #include "stm32h5xx_hal.h"
 #include <string.h>
@@ -13,11 +20,35 @@
 #define CMD_STATUS 0x02U
 #define CMD_GPIO_READ 0x03U
 #define CMD_GPIO_WRITE 0x04U
+#define CMD_GPIO_CONFIG 0x05U
+#define CMD_PIN_READ 0x06U
+#define CMD_PIN_SET 0x07U
 #define CMD_TPLD_BEGIN 0x10U
 #define CMD_TPLD_CHUNK 0x11U
 #define CMD_TPLD_COMMIT 0x12U
 #define CMD_RESET 0x13U
 #define CMD_I2C_TRANSFER 0x20U
+#define CMD_I2C_TARGET_CONFIG 0x21U
+#define CMD_I2C_TARGET_PROFILE 0x22U
+#define CMD_I2C_TARGET_WORD 0x23U
+#define CMD_SPI_CONFIG 0x30U
+#define CMD_SPI_TRANSFER 0x31U
+#define CMD_QEP_START 0x40U
+#define CMD_QEP_READ 0x41U
+#define CMD_QEP_RESET 0x42U
+#define CMD_SERIAL_CONFIG 0x50U
+#define CMD_SERIAL_WRITE 0x51U
+#define CMD_SERIAL_READ 0x52U
+#define CMD_REGISTER_WRITE 0x53U
+#define CMD_REGISTER_READ 0x54U
+#define CMD_I3C_CONFIG 0x60U
+#define CMD_I3C_DAA 0x61U
+#define CMD_I3C_TRANSFER 0x62U
+#define CMD_INTERFACE_STATUS 0x70U
+#define CMD_CAN_CONFIG 0x71U
+#define CMD_CAN_TX 0x72U
+#define CMD_CAN_RX 0x73U
+#define CMD_CAN_STATUS 0x74U
 #define RESULT_OK 0U
 #define RESULT_INVALID 1U
 #define RESULT_IO 2U
@@ -52,8 +83,7 @@ static void put32(uint8_t *p, uint32_t value)
 static int pin(uint8_t port, uint8_t number, GPIO_TypeDef **gpio,
                uint16_t *mask)
 {
-  if (port != 0U || (number != 0U && number != 1U &&
-                     number != 4U && number != 5U)) return 0;
+  if (port != 0U || number > 5U) return 0;
   *gpio = GPIOA;
   *mask = (uint16_t)(1U << number);
   return 1;
@@ -70,11 +100,13 @@ static void handle(void)
   BridgeImage image;
   GPIO_TypeDef *gpio;
   uint16_t mask;
+  uint8_t pin_mode;
+  uint16_t pin_value;
   switch (cmd) {
   case CMD_HELLO:
     if (size) { result = RESULT_INVALID; break; }
-    out[n++] = 1; out[n++] = 0; /* protocol major/minor */
-    put32(out + n, 0x0000001FUL); n += 4; /* USB, GPIO, I2C, TPLD, Flash */
+    out[n++] = 1; out[n++] = 5; /* protocol major/minor */
+    put32(out + n, 0x0001FFFFUL); n += 4; /* + I2C sensor profile / CAN */
     memcpy(out + n, "GMP Peripheral ISO Host", 23); n += 23;
     break;
   case CMD_STATUS:
@@ -90,21 +122,39 @@ static void handle(void)
     if (size != 2U || !pin(p[0], p[1], &gpio, &mask)) {
       result = RESULT_INVALID; break;
     }
-    out[n++] = HAL_GPIO_ReadPin(gpio, mask) == GPIO_PIN_SET;
+    if (!BridgeGpio_Get(p[1], &pin_mode, &pin_value)) {
+      result = RESULT_IO; break;
+    }
+    out[n++] = pin_value != 0U;
     break;
   case CMD_GPIO_WRITE: {
-    GPIO_InitTypeDef config = {0};
     if (size != 3U || p[2] > 1U || p[0] != 0U || p[1] != 0U ||
         !pin(p[0], p[1], &gpio, &mask)) {
       result = RESULT_INVALID; break;
     }
-    HAL_GPIO_WritePin(gpio, mask, p[2] ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    /* PA0 is TPLD IO12 / SW2. Open drain uses the board's 5.1 kOhm pull-up. */
-    config.Pin = mask; config.Mode = GPIO_MODE_OUTPUT_OD;
-    config.Pull = GPIO_NOPULL; config.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(gpio, &config);
+    if (!BridgeGpio_Configure(0U, BRIDGE_GPIO_OUTPUT, 1U) ||
+        !BridgeGpio_Set(0U, p[2])) result = RESULT_IO;
     break;
   }
+  case CMD_GPIO_CONFIG:
+    if (size != 3U || p[0] != 0U ||
+        !BridgeGpio_Configure(p[1], p[2], boot_status != 0xFFU))
+      result = RESULT_INVALID;
+    break;
+  case CMD_PIN_READ:
+    if (size != 2U || p[0] != 0U ||
+        !BridgeGpio_Get(p[1], &pin_mode, &pin_value)) {
+      result = RESULT_INVALID; break;
+    }
+    out[n++] = pin_mode;
+    out[n++] = (uint8_t)pin_value;
+    out[n++] = (uint8_t)(pin_value >> 8);
+    break;
+  case CMD_PIN_SET:
+    if (size != 4U || p[0] != 0U ||
+        !BridgeGpio_Set(p[1], (uint16_t)p[2] | ((uint16_t)p[3] << 8)))
+      result = RESULT_INVALID;
+    break;
   case CMD_TPLD_BEGIN:
     if (size != 1U || p[0] > 1U) { result = RESULT_INVALID; break; }
     memset(received, 0, sizeof(received));
@@ -137,13 +187,146 @@ static void handle(void)
     break;
   case CMD_I2C_TRANSFER:
     if (size < 3U || p[1] > 64U || p[2] > 64U ||
-        size != (uint16_t)(3U + p[1]) || p[0] == 0x79U) {
+        size != (uint16_t)(3U + p[1]) || p[0] == 0x79U ||
+        BridgeI2cTarget_Active()) {
       result = RESULT_INVALID; break;
     }
     if (!TPLD2001_I2CTransfer(p[0], p + 3, p[1], out, p[2])) {
       result = RESULT_IO; break;
     }
     n = p[2];
+    break;
+  case CMD_I2C_TARGET_CONFIG:
+    if (size != 2U || !BridgeI2cTarget_Config(p[0], p[1]))
+      result = RESULT_INVALID;
+    break;
+  case CMD_I2C_TARGET_PROFILE:
+    if (size != 4U || !BridgeI2cTarget_SetProfileWord(
+        p[0], p[1], (uint16_t)((uint16_t)p[2] << 8U) | p[3]))
+      result = RESULT_INVALID;
+    break;
+  case CMD_I2C_TARGET_WORD: {
+    uint16_t value;
+    if (size != 1U || !BridgeI2cTarget_GetWord(p[0], &value)) {
+      result = RESULT_INVALID; break;
+    }
+    out[n++] = (uint8_t)(value >> 8U);
+    out[n++] = (uint8_t)value;
+    break;
+  }
+  case CMD_SPI_CONFIG:
+    if (size != 3U || !BridgeSpi_Config(p[0], p[1], p[2]))
+      result = RESULT_INVALID;
+    break;
+  case CMD_SPI_TRANSFER:
+    if (size == 0U || size > 64U ||
+        !BridgeSpi_Transfer(p, out, (uint8_t)size)) result = RESULT_IO;
+    else n = size;
+    break;
+  case CMD_QEP_START:
+    if (size || !BridgeQep_Start()) result = RESULT_IO;
+    break;
+  case CMD_QEP_READ: {
+    int32_t position;
+    uint8_t index, direction;
+    if (size || !BridgeQep_Read(&position, &index, &direction)) {
+      result = RESULT_IO; break;
+    }
+    put32(out, (uint32_t)position);
+    out[4] = index;
+    out[5] = direction;
+    n = 6U;
+    break;
+  }
+  case CMD_QEP_RESET:
+    if (size || !BridgeQep_Reset()) result = RESULT_IO;
+    break;
+  case CMD_SERIAL_CONFIG:
+    if (size != 6U || !BridgeSerial_Config(p[0], p[1], get32(p + 2U)))
+      result = RESULT_INVALID;
+    break;
+  case CMD_SERIAL_WRITE:
+    if (size < 2U || size > 65U ||
+        !BridgeSerial_Write(p[0], p + 1U, (uint8_t)(size - 1U)))
+      result = RESULT_IO;
+    break;
+  case CMD_SERIAL_READ: {
+    uint8_t actual = 0U;
+    if (size != 2U || !BridgeSerial_Read(p[0], out, p[1], &actual)) {
+      result = RESULT_INVALID; break;
+    }
+    n = actual;
+    break;
+  }
+  case CMD_REGISTER_WRITE:
+    if (size < 3U || size > 34U ||
+        !BridgeRegs_Write(p[0], p[1], p + 2U,
+                          (uint8_t)(size - 2U))) result = RESULT_INVALID;
+    break;
+  case CMD_REGISTER_READ:
+    if (size != 3U || !BridgeRegs_Read(p[0], p[1], out, p[2]))
+      result = RESULT_INVALID;
+    else n = p[2];
+    break;
+  case CMD_I3C_CONFIG:
+    if (size != 1U || !BridgeI3c_Config(p[0])) result = RESULT_INVALID;
+    break;
+  case CMD_I3C_DAA: {
+    uint8_t actual = 0U;
+    if (size != 2U || !BridgeI3c_Assign(p[0], p[1], out + 1U, &actual)) {
+      result = RESULT_IO; break;
+    }
+    out[0] = actual; n = (uint16_t)(actual + 1U);
+    break;
+  }
+  case CMD_I3C_TRANSFER:
+    if (size < 3U || p[1] > 64U || p[2] > 64U ||
+        size != (uint16_t)(3U + p[1]) ||
+        !BridgeI3c_Transfer(p[0], p + 3U, p[1], out, p[2]))
+      result = RESULT_IO;
+    else n = p[2];
+    break;
+  case CMD_INTERFACE_STATUS: {
+    uint8_t ready, role;
+    uint32_t error;
+    if (size != 0U) { result = RESULT_INVALID; break; }
+    BridgeSpi_GetStatus(&ready, &role, &error);
+    out[n++] = ready; out[n++] = role;
+    put32(out + n, error); n += 4U;
+    BridgeI3c_GetStatus(&ready, &role, &error);
+    out[n++] = ready; out[n++] = role;
+    put32(out + n, error); n += 4U;
+    out[n++] = BridgeI2cTarget_Active();
+    out[n++] = BridgeI2cTarget_Address();
+    out[n++] = BridgeSerial_ReadyMask();
+    break;
+  }
+  case CMD_CAN_CONFIG:
+    if (size != 4U || !BridgeCan_Config(get32(p))) result = RESULT_INVALID;
+    break;
+  case CMD_CAN_TX:
+    if (size < 6U || p[5] > 8U || size != (uint16_t)(6U + p[5]) ||
+        !BridgeCan_Send(get32(p), p[4], p + 6U, p[5])) result = RESULT_IO;
+    break;
+  case CMD_CAN_RX: {
+    uint32_t identifier;
+    uint8_t extended, length;
+    int received;
+    if (size) { result = RESULT_INVALID; break; }
+    received = BridgeCan_Receive(&identifier, &extended, out + 7U, &length);
+    if (received < 0) { result = RESULT_IO; break; }
+    out[0] = (uint8_t)(received != 0);
+    if (received) {
+      put32(out + 1U, identifier);
+      out[5] = extended;
+      out[6] = length;
+      n = (uint16_t)(7U + length);
+    } else n = 1U;
+    break;
+  }
+  case CMD_CAN_STATUS:
+    if (size || !BridgeCan_Status(out)) result = RESULT_INVALID;
+    else n = 7U;
     break;
   case CMD_RESET:
     if (size) { result = RESULT_INVALID; break; }
@@ -168,11 +351,8 @@ static void handle(void)
 void Bridge_Init(void)
 {
   BridgeImage image;
-  GPIO_InitTypeDef config = {0};
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  config.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5;
-  config.Mode = GPIO_MODE_INPUT; config.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &config);
+  BridgeRegs_Init();
+  BridgeGpio_Init();
   boot_status = 0xFFU;
   if (BridgeStore_Read(&image) && image.autoload)
     boot_status = (uint8_t)TPLD2001_LoadImage(image.image, BRIDGE_IMAGE_SIZE,
@@ -183,6 +363,9 @@ void Bridge_Init(void)
 void Bridge_Poll(void)
 {
   uint8_t byte;
+  BridgeQep_Poll();
+  BridgeSerial_Poll();
+  BridgeI3c_Poll();
   if (pending_response) {
     if (BridgeUsb_Send(response, response_size)) pending_response = 0U;
     return;

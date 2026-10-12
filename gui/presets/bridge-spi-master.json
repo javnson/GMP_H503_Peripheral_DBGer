@@ -1,0 +1,5 @@
+{
+  "schema": 1, "name": "SPI 远端寄存器", "interface": "spi", "role": "master",
+  "protocol": "bridge-register", "settings": {"mode": 0},
+  "parameters": [{"name": "状态", "register": 16, "type": "u8", "access": "r"}]
+}

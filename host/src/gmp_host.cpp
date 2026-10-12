@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 #ifdef _WIN32
 # define WIN32_LEAN_AND_MEAN
@@ -41,6 +42,14 @@ static uint32_t crc32(const uint8_t *p, size_t n) {
     for (int b = 0; b < 8; ++b) c = (c >> 1) ^ ((c & 1u) ? 0xEDB88320u : 0u);
   }
   return ~c;
+}
+static uint8_t crc8(const uint8_t *p, size_t n) {
+  uint8_t c = 0;
+  for (size_t i = 0; i < n; ++i) {
+    c ^= p[i];
+    for (int b = 0; b < 8; ++b) c = uint8_t((c << 1) ^ ((c & 0x80) ? 7 : 0));
+  }
+  return c;
 }
 static uint32_t le32(const uint8_t *p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) |
@@ -193,6 +202,21 @@ int gmp_status_get(gmp_device *d, gmp_status *out) {
   out->image_crc32 = le32(result.data() + 8);
   return GMP_OK;
 }
+int gmp_interface_status_get(gmp_device *d, gmp_interface_status *out) {
+  if (!out) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x70, nullptr, 0, result);
+  if (rc) return rc;
+  if (result.size() != 15) return GMP_ERR_PROTOCOL;
+  out->spi_ready = result[0]; out->spi_role = result[1];
+  out->spi_error = le32(result.data() + 2);
+  out->i3c_ready = result[6]; out->i3c_role = result[7];
+  out->i3c_error = le32(result.data() + 8);
+  out->i2c_target_active = result[12];
+  out->i2c_target_address = result[13];
+  out->serial_ready_mask = result[14];
+  return GMP_OK;
+}
 int gmp_gpio_read(gmp_device *d, uint8_t port, uint8_t pin, uint8_t *value) {
   if (!value) return GMP_ERR_ARGUMENT;
   uint8_t p[] = {port, pin}; std::vector<uint8_t> result;
@@ -204,6 +228,25 @@ int gmp_gpio_read(gmp_device *d, uint8_t port, uint8_t pin, uint8_t *value) {
 int gmp_gpio_write(gmp_device *d, uint8_t port, uint8_t pin, uint8_t value) {
   uint8_t p[] = {port, pin, value}; std::vector<uint8_t> result;
   return transact(d, 4, p, sizeof(p), result);
+}
+int gmp_pin_config(gmp_device *d, uint8_t pin, uint8_t mode) {
+  if (pin > 5 || mode > 3) return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {0, pin, mode}; std::vector<uint8_t> result;
+  return transact(d, 5, p, sizeof(p), result);
+}
+int gmp_pin_read(gmp_device *d, uint8_t pin, uint8_t *mode, uint16_t *value) {
+  if (pin > 5 || !mode || !value) return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {0, pin}; std::vector<uint8_t> result;
+  int rc = transact(d, 6, p, sizeof(p), result);
+  if (rc) return rc;
+  if (result.size() != 3) return GMP_ERR_PROTOCOL;
+  *mode = result[0]; *value = uint16_t(result[1]) | (uint16_t(result[2]) << 8);
+  return GMP_OK;
+}
+int gmp_pin_set(gmp_device *d, uint8_t pin, uint16_t value) {
+  if (pin > 5) return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {0, pin, uint8_t(value), uint8_t(value >> 8)};
+  std::vector<uint8_t> result; return transact(d, 7, p, sizeof(p), result);
 }
 int gmp_i2c_transfer(gmp_device *d, uint8_t address, const uint8_t *tx,
                      uint8_t tx_length, uint8_t *rx, uint8_t rx_length) {
@@ -217,6 +260,261 @@ int gmp_i2c_transfer(gmp_device *d, uint8_t address, const uint8_t *tx,
   if (result.size() != rx_length) return GMP_ERR_PROTOCOL;
   if (rx_length) memcpy(rx, result.data(), rx_length);
   return GMP_OK;
+}
+int gmp_i3c_config(gmp_device *d, uint8_t role) {
+  if (role > 1) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result; return transact(d, 0x60, &role, 1, result);
+}
+int gmp_i2c_target_config(gmp_device *d, uint8_t enable, uint8_t address) {
+  if (enable > 1 || (enable && (address < 8 || address > 0x77)))
+    return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {enable, address}; std::vector<uint8_t> result;
+  return transact(d, 0x21, p, sizeof(p), result);
+}
+int gmp_i2c_target_profile(gmp_device *d, uint8_t profile, uint8_t reg,
+                           uint16_t value) {
+  if (profile > 1 || (profile && reg != 0 && reg != 1 && reg != 2))
+    return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {profile, reg, uint8_t(value >> 8), uint8_t(value)};
+  std::vector<uint8_t> result;
+  return transact(d, 0x22, p, sizeof(p), result);
+}
+int gmp_i2c_target_word(gmp_device *d, uint8_t reg, uint16_t *value) {
+  if (!value) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x23, &reg, 1, result);
+  if (rc) return rc;
+  if (result.size() != 2) return GMP_ERR_PROTOCOL;
+  *value = uint16_t(result[0] << 8) | result[1];
+  return GMP_OK;
+}
+int gmp_can_config(gmp_device *d, uint32_t bitrate) {
+  if (bitrate != 125000 && bitrate != 250000 && bitrate != 500000 && bitrate != 1000000)
+    return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {uint8_t(bitrate), uint8_t(bitrate >> 8),
+                 uint8_t(bitrate >> 16), uint8_t(bitrate >> 24)};
+  std::vector<uint8_t> result; return transact(d, 0x71, p, sizeof(p), result);
+}
+int gmp_can_send(gmp_device *d, uint32_t id, uint8_t extended,
+                 const uint8_t *data, uint8_t length) {
+  if (extended > 1 || id > (extended ? 0x1FFFFFFF : 0x7FF) ||
+      length > 8 || (length && !data)) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> p{uint8_t(id), uint8_t(id >> 8), uint8_t(id >> 16),
+                         uint8_t(id >> 24), extended, length};
+  if (length) p.insert(p.end(), data, data + length);
+  std::vector<uint8_t> result; return transact(d, 0x72, p.data(), p.size(), result);
+}
+int gmp_can_receive(gmp_device *d, uint8_t *present, uint32_t *id,
+                    uint8_t *extended, uint8_t *data, uint8_t *length) {
+  if (!present || !id || !extended || !data || !length) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x73, nullptr, 0, result);
+  if (rc) return rc;
+  if (result.size() == 1 && result[0] == 0) { *present = 0; *length = 0; return GMP_OK; }
+  if (result.size() < 7 || result[0] != 1 || result[5] > 1 ||
+      result[6] > 8 || result.size() != size_t(7 + result[6])) return GMP_ERR_PROTOCOL;
+  *present = 1; *id = le32(result.data() + 1); *extended = result[5];
+  *length = result[6]; memcpy(data, result.data() + 7, *length);
+  return GMP_OK;
+}
+int gmp_can_status_get(gmp_device *d, gmp_can_status *out) {
+  if (!out) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x74, nullptr, 0, result);
+  if (rc) return rc;
+  if (result.size() != 7) return GMP_ERR_PROTOCOL;
+  memcpy(out, result.data(), 7);
+  return GMP_OK;
+}
+int gmp_i3c_assign(gmp_device *d, uint8_t base_address, uint8_t maximum,
+                   uint8_t *addresses, uint8_t *actual) {
+  if (!addresses || !actual || base_address < 8 || maximum < 1 || maximum > 8 ||
+      unsigned(base_address) + maximum > 0x78) return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {base_address, maximum}; std::vector<uint8_t> result;
+  int rc = transact(d, 0x61, p, sizeof(p), result);
+  if (rc) return rc;
+  if (result.empty() || result[0] > maximum || result.size() != size_t(result[0]) + 1)
+    return GMP_ERR_PROTOCOL;
+  *actual = result[0];
+  if (*actual) memcpy(addresses, result.data() + 1, *actual);
+  return GMP_OK;
+}
+int gmp_i3c_transfer(gmp_device *d, uint8_t address, const uint8_t *tx,
+                     uint8_t tx_length, uint8_t *rx, uint8_t rx_length) {
+  if (address < 8 || address > 0x77 || tx_length > 64 || rx_length > 64 ||
+      (!tx_length && !rx_length) || (tx_length && !tx) || (rx_length && !rx))
+    return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> p{address, tx_length, rx_length};
+  if (tx_length) p.insert(p.end(), tx, tx + tx_length);
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x62, p.data(), p.size(), result);
+  if (rc) return rc;
+  if (result.size() != rx_length) return GMP_ERR_PROTOCOL;
+  if (rx_length) memcpy(rx, result.data(), rx_length);
+  return GMP_OK;
+}
+int gmp_spi_config(gmp_device *d, uint8_t role, uint8_t mode, uint8_t divider) {
+  if (role > 1 || mode > 3 || divider > 7) return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {role, mode, divider}; std::vector<uint8_t> result;
+  return transact(d, 0x30, p, sizeof(p), result);
+}
+int gmp_spi_transfer(gmp_device *d, const uint8_t *tx, uint8_t *rx, uint8_t length) {
+  if (!tx || !rx || !length || length > 64) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x31, tx, length, result);
+  if (rc) return rc;
+  if (result.size() != length) return GMP_ERR_PROTOCOL;
+  memcpy(rx, result.data(), length); return GMP_OK;
+}
+int gmp_qep_start(gmp_device *d) {
+  std::vector<uint8_t> result; return transact(d, 0x40, nullptr, 0, result);
+}
+int gmp_qep_read(gmp_device *d, int32_t *position, uint8_t *index_level, uint8_t *direction) {
+  if (!position || !index_level || !direction) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> result;
+  int rc = transact(d, 0x41, nullptr, 0, result);
+  if (rc) return rc;
+  if (result.size() != 6) return GMP_ERR_PROTOCOL;
+  *position = int32_t(le32(result.data()));
+  *index_level = result[4]; *direction = result[5]; return GMP_OK;
+}
+int gmp_qep_reset(gmp_device *d) {
+  std::vector<uint8_t> result; return transact(d, 0x42, nullptr, 0, result);
+}
+int gmp_serial_config(gmp_device *d, uint8_t port, uint8_t role, uint32_t baud) {
+  if (port > 2 || role > 1 || baud < 1200 || baud > 2000000) return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {port, role, uint8_t(baud), uint8_t(baud >> 8),
+                 uint8_t(baud >> 16), uint8_t(baud >> 24)};
+  std::vector<uint8_t> result; return transact(d, 0x50, p, sizeof(p), result);
+}
+int gmp_serial_write(gmp_device *d, uint8_t port, const uint8_t *data, uint8_t length) {
+  if (port > 2 || !data || !length || length > 64) return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> p{port}; p.insert(p.end(), data, data + length);
+  std::vector<uint8_t> result; return transact(d, 0x51, p.data(), p.size(), result);
+}
+int gmp_serial_read(gmp_device *d, uint8_t port, uint8_t *data, uint8_t capacity, uint8_t *actual) {
+  if (port > 2 || !actual || capacity > 64 || (capacity && !data)) return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {port, capacity}; std::vector<uint8_t> result;
+  int rc = transact(d, 0x52, p, sizeof(p), result);
+  if (rc) return rc;
+  if (result.size() > capacity) return GMP_ERR_PROTOCOL;
+  *actual = uint8_t(result.size());
+  if (*actual) memcpy(data, result.data(), *actual);
+  return GMP_OK;
+}
+int gmp_register_write(gmp_device *d, uint8_t port, uint8_t address,
+                       const uint8_t *data, uint8_t length) {
+  if (port > 5 || !data || !length || length > 32 || unsigned(address) + length > 256)
+    return GMP_ERR_ARGUMENT;
+  std::vector<uint8_t> p{port, address}; p.insert(p.end(), data, data + length);
+  std::vector<uint8_t> result; return transact(d, 0x53, p.data(), p.size(), result);
+}
+int gmp_register_read(gmp_device *d, uint8_t port, uint8_t address,
+                      uint8_t *data, uint8_t length) {
+  if (port > 5 || !data || !length || length > 32 || unsigned(address) + length > 256)
+    return GMP_ERR_ARGUMENT;
+  uint8_t p[] = {port, address, length}; std::vector<uint8_t> result;
+  int rc = transact(d, 0x54, p, sizeof(p), result);
+  if (rc) return rc;
+  if (result.size() != length) return GMP_ERR_PROTOCOL;
+  memcpy(data, result.data(), length); return GMP_OK;
+}
+static int remote_register(gmp_device *d, uint8_t bus, uint8_t target_address,
+                           uint8_t reg, const uint8_t *tx, uint8_t *rx,
+                           uint8_t length) {
+  if ((bus != 3 && bus != 4) || !length || length > 32 ||
+      unsigned(reg) + length > 256 || (!tx && !rx)) return GMP_ERR_ARGUMENT;
+  std::array<uint8_t, 37> request{}, response{};
+  request[0] = 0xA5; request[1] = tx ? 1 : 0;
+  request[2] = reg; request[3] = length;
+  size_t frame = tx ? size_t(length) + 4 : 4;
+  if (tx) memcpy(request.data() + 4, tx, length);
+  request[frame] = crc8(request.data(), frame);
+  int rc;
+  if (bus == 3) {
+    std::array<uint8_t, 37> discarded{}, dummy{};
+    rc = gmp_spi_transfer(d, request.data(), discarded.data(), 37);
+    if (rc) return rc;
+    /* Allow the target's EOT interrupt to prepare the next full-duplex reply. */
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    rc = gmp_spi_transfer(d, dummy.data(), response.data(), 37);
+  } else {
+    rc = gmp_i3c_transfer(d, target_address, request.data(), 37,
+                          response.data(), 37);
+  }
+  if (rc) return rc;
+  uint8_t returned = response[2];
+  if (response[0] != 0x5A || returned > 32 || (rx && returned != length) ||
+      (!rx && returned != 0) ||
+      response[size_t(returned) + 3] != crc8(response.data(), size_t(returned) + 3))
+    return GMP_ERR_PROTOCOL;
+  if (response[1] != 0) return GMP_ERR_DEVICE;
+  if (rx) memcpy(rx, response.data() + 3, length);
+  return GMP_OK;
+}
+static int serial_remote_register(gmp_device *d, uint8_t port, uint8_t reg,
+                                  const uint8_t *tx, uint8_t *rx, uint8_t length) {
+  uint8_t request[37] = {0xA5, uint8_t(tx ? 1 : 0), reg, length};
+  size_t payload_size = tx ? size_t(length) : 0;
+  if (tx) memcpy(request + 4, tx, length);
+  request[4 + payload_size] = crc8(request, 4 + payload_size);
+  /* A register transaction owns the transparent RX queue. */
+  for (int drain = 0; drain < 3; ++drain) {
+    uint8_t old[64], actual = 0;
+    int rc = gmp_serial_read(d, port, old, 64, &actual);
+    if (rc) return rc;
+    if (!actual) break;
+  }
+  int rc = gmp_serial_write(d, port, request, uint8_t(5 + payload_size));
+  if (rc) return rc;
+  std::vector<uint8_t> frame;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+  while (std::chrono::steady_clock::now() < deadline) {
+    uint8_t chunk[64], actual = 0;
+    rc = gmp_serial_read(d, port, chunk, 64, &actual);
+    if (rc) return rc;
+    frame.insert(frame.end(), chunk, chunk + actual);
+    while (!frame.empty() && frame[0] != 0x5A) frame.erase(frame.begin());
+    if (frame.size() >= 3) {
+      uint8_t returned = frame[2];
+      if (returned > 32) { frame.erase(frame.begin()); continue; }
+      size_t expected = size_t(returned) + 4;
+      if (frame.size() >= expected) {
+        if (frame[expected - 1] != crc8(frame.data(), expected - 1))
+          return GMP_ERR_PROTOCOL;
+        if (frame[1] != 0) return GMP_ERR_DEVICE;
+        if (returned != (rx ? length : 0)) return GMP_ERR_PROTOCOL;
+        if (rx) memcpy(rx, frame.data() + 3, length);
+        return GMP_OK;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return GMP_ERR_TIMEOUT;
+}
+int gmp_remote_register_read(gmp_device *d, uint8_t bus, uint8_t target_address,
+                             uint8_t reg, uint8_t *data, uint8_t length) {
+  if (!data || !length || length > 32 || unsigned(reg) + length > 256)
+    return GMP_ERR_ARGUMENT;
+  if (bus <= 2)
+    return serial_remote_register(d, bus, reg, nullptr, data, length);
+  if (bus == 5)
+    return gmp_i2c_transfer(d, target_address, &reg, 1, data, length);
+  return remote_register(d, bus, target_address, reg, nullptr, data, length);
+}
+int gmp_remote_register_write(gmp_device *d, uint8_t bus, uint8_t target_address,
+                              uint8_t reg, const uint8_t *data, uint8_t length) {
+  if (!data || !length || length > 32 || unsigned(reg) + length > 256)
+    return GMP_ERR_ARGUMENT;
+  if (bus <= 2)
+    return serial_remote_register(d, bus, reg, data, nullptr, length);
+  if (bus == 5) {
+    uint8_t payload[33]; payload[0] = reg;
+    memcpy(payload + 1, data, length);
+    return gmp_i2c_transfer(d, target_address, payload, uint8_t(length + 1),
+                            nullptr, 0);
+  }
+  return remote_register(d, bus, target_address, reg, data, nullptr, length);
 }
 int gmp_tpld_upload(gmp_device *d, const uint8_t image[512], uint8_t autoload) {
   if (!d || !image || autoload > 1) return GMP_ERR_ARGUMENT;

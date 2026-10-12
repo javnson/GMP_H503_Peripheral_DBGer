@@ -214,7 +214,12 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef* hfdcan)
   /** Initializes the peripherals clock
   */
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
+#ifdef H503_BRIDGE
+    /* Bridge SystemClock_Config runs from CSI/PLL1; HSE is not enabled. */
+    PeriphClkInitStruct.FdcanClockSelection = RCC_FDCANCLKSOURCE_PLL1Q;
+#else
     PeriphClkInitStruct.FdcanClockSelection = RCC_FDCANCLKSOURCE_HSE;
+#endif
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();
@@ -397,6 +402,13 @@ void HAL_I3C_MspInit(I3C_HandleTypeDef* hi3c)
     GPIO_InitStruct.Alternate = GPIO_AF3_I3C2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+#ifdef H503_BRIDGE
+    HAL_NVIC_SetPriority(I3C2_EV_IRQn, 5U, 0U);
+    HAL_NVIC_EnableIRQ(I3C2_EV_IRQn);
+    HAL_NVIC_SetPriority(I3C2_ER_IRQn, 5U, 0U);
+    HAL_NVIC_EnableIRQ(I3C2_ER_IRQn);
+#endif
+
     /* USER CODE BEGIN I3C2_MspInit 1 */
 
     /* USER CODE END I3C2_MspInit 1 */
@@ -426,6 +438,11 @@ void HAL_I3C_MspDeInit(I3C_HandleTypeDef* hi3c)
     PB4(NJTRST)     ------> I3C2_SDA
     */
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_3|GPIO_PIN_4);
+
+#ifdef H503_BRIDGE
+    HAL_NVIC_DisableIRQ(I3C2_EV_IRQn);
+    HAL_NVIC_DisableIRQ(I3C2_ER_IRQn);
+#endif
 
     /* USER CODE BEGIN I3C2_MspDeInit 1 */
 
@@ -522,6 +539,21 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
+#ifdef H503_BRIDGE
+    /* PCB: PB2=SCK, PB14=MISO, PB15=MOSI, PA8=NSS (software GPIO). */
+    GPIO_InitStruct.Pin = GPIO_PIN_2;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF6_SPI2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = GPIO_PIN_14 | GPIO_PIN_15;
+    GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    /* The 8-bit slave TX FIFO must be serviced ahead of USB CDC traffic. */
+    HAL_NVIC_SetPriority(SPI2_IRQn, 2U, 0U);
+    HAL_NVIC_EnableIRQ(SPI2_IRQn);
+#else
     /**SPI2 GPIO Configuration
     PA7     ------> SPI2_MISO
     PB1     ------> SPI2_MOSI
@@ -540,6 +572,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF6_SPI2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+#endif
 
     /* USER CODE BEGIN SPI2_MspInit 1 */
 
@@ -570,9 +603,13 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
     PB1     ------> SPI2_MOSI
     PB2     ------> SPI2_SCK
     */
+#ifdef H503_BRIDGE
+    HAL_NVIC_DisableIRQ(SPI2_IRQn);
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_2 | GPIO_PIN_14 | GPIO_PIN_15);
+#else
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_7);
-
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_1|GPIO_PIN_2);
+#endif
 
     /* USER CODE BEGIN SPI2_MspDeInit 1 */
 
@@ -623,6 +660,17 @@ void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
+#ifdef H503_BRIDGE
+    /* PCB encoder: PA6=A, PA7=B, PB7=index. */
+    GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = GPIO_PIN_7;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+#else
     /**TIM3 GPIO Configuration
     PA0     ------> TIM3_CH1
     PB5     ------> TIM3_CH2
@@ -641,6 +689,7 @@ void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+#endif
 
     /* USER CODE BEGIN TIM3_MspInit 1 */
 
@@ -739,9 +788,13 @@ void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* htim_encoder)
     PB5     ------> TIM3_CH2
     PB7     ------> TIM3_ETR
     */
+#ifdef H503_BRIDGE
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_6 | GPIO_PIN_7);
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_7);
+#else
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_0);
-
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_5|GPIO_PIN_7);
+#endif
 
     /* USER CODE BEGIN TIM3_MspDeInit 1 */
 
@@ -779,6 +832,14 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     __HAL_RCC_USART1_CLK_ENABLE();
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
+#ifdef H503_BRIDGE
+    GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+#else
     /**USART1 GPIO Configuration
     PA1     ------> USART1_RX
     PA2     ------> USART1_TX
@@ -789,12 +850,45 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF8_USART1;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+#endif
 
     /* USER CODE BEGIN USART1_MspInit 1 */
 
     /* USER CODE END USART1_MspInit 1 */
 
   }
+#ifdef H503_BRIDGE
+  else if (huart->Instance == USART2)
+  {
+    __HAL_RCC_USART2_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF9_USART2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+    GPIO_InitStruct.Pin = GPIO_PIN_8;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  }
+  else if (huart->Instance == USART3)
+  {
+    __HAL_RCC_USART3_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Pin = GPIO_PIN_10;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = GPIO_PIN_15;
+    GPIO_InitStruct.Alternate = GPIO_AF13_USART3;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  }
+#endif
 
 }
 
@@ -818,12 +912,29 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     PA1     ------> USART1_RX
     PA2     ------> USART1_TX
     */
+#ifdef H503_BRIDGE
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9 | GPIO_PIN_10);
+#else
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_1|GPIO_PIN_2);
+#endif
 
     /* USER CODE BEGIN USART1_MspDeInit 1 */
 
     /* USER CODE END USART1_MspDeInit 1 */
   }
+#ifdef H503_BRIDGE
+  else if (huart->Instance == USART2)
+  {
+    __HAL_RCC_USART2_CLK_DISABLE();
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_8);
+  }
+  else if (huart->Instance == USART3)
+  {
+    __HAL_RCC_USART3_CLK_DISABLE();
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_10);
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_15);
+  }
+#endif
 
 }
 

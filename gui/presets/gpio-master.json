@@ -1,0 +1,8 @@
+{
+  "schema": 1, "name": "GPIO PA0/PA1 状态", "interface": "gpio", "role": "master",
+  "protocol": "raw", "settings": {},
+  "parameters": [
+    {"name": "PA0 当前值", "pin": 0, "type": "u16", "access": "r"},
+    {"name": "PA1 当前值", "pin": 1, "type": "u16", "access": "r"}
+  ]
+}

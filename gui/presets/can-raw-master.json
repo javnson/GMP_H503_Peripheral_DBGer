@@ -1,0 +1,5 @@
+{
+  "schema": 1, "name": "经典 CAN 原始帧解析", "interface": "can", "role": "master",
+  "protocol": "can-raw", "settings": {"nominal_bitrate": 500000},
+  "parameters": [{"name": "温度原始值", "can_id": 291, "byte_offset": 0, "type": "i16", "endian": "little", "scale": 0.1, "unit": "°C", "access": "r"}]
+}

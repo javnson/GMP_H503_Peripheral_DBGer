@@ -1,0 +1,5 @@
+{
+  "schema": 1, "name": "UART 原始命令收发", "interface": "uart", "role": "master",
+  "protocol": "raw", "settings": {"baud": 115200},
+  "parameters": [{"name": "原始请求", "request": "01 02 03", "receive": 8, "type": "u8", "access": "r"}]
+}

@@ -1,0 +1,8 @@
+{
+  "schema": 1, "name": "Modbus RTU 读取保持寄存器", "interface": "rs485", "role": "master",
+  "protocol": "modbus-rtu", "settings": {"baud": 9600, "unit": 1},
+  "parameters": [
+    {"name": "寄存器 0", "register": 0, "type": "u16", "endian": "big", "access": "r"},
+    {"name": "寄存器 1", "register": 1, "type": "u16", "endian": "big", "access": "r"}
+  ]
+}

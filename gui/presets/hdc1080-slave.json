@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "HDC1080 I²C 目标仿真",
+  "interface": "i2c",
+  "role": "slave",
+  "protocol": "hdc1080",
+  "settings": {"address": 64},
+  "parameters": [
+    {"name": "模拟温度", "register": 0, "type": "u16", "endian": "big", "scale": 0.0025177001953125, "offset": -40, "unit": "°C", "access": "rw", "value": 25},
+    {"name": "模拟湿度", "register": 1, "type": "u16", "endian": "big", "scale": 0.00152587890625, "offset": 0, "unit": "%RH", "access": "rw", "value": 50},
+    {"name": "配置字", "register": 2, "type": "u16", "endian": "big", "access": "rw", "value": 4096},
+    {"name": "厂商 ID", "register": 254, "type": "u16", "endian": "big", "access": "r"},
+    {"name": "器件 ID", "register": 255, "type": "u16", "endian": "big", "access": "r"}
+  ]
+}

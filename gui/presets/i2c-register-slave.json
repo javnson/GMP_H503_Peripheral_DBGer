@@ -1,0 +1,8 @@
+{
+  "schema": 1, "name": "I²C 平坦寄存器从机", "interface": "i2c", "role": "slave",
+  "protocol": "bridge-register", "settings": {"address": 66},
+  "parameters": [
+    {"name": "状态", "register": 16, "type": "u8", "access": "rw", "value": 1},
+    {"name": "计数", "register": 17, "type": "u16", "endian": "little", "access": "rw", "value": 1234}
+  ]
+}
