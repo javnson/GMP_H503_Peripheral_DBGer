@@ -1,0 +1,16 @@
+# Keil build output and per-user IDE state
+H503_Peripheral_DBGer/Drivers/
+H503_Peripheral_DBGer/MDK-ARM/H503_Peripheral_DBGer/
+H503_Peripheral_DBGer/MDK-ARM/RTE/
+*.uvoptx
+*.uvguix.*
+*.uvgui.*
+*.bak
+
+# Python and local inspection artifacts
+__pycache__/
+*.py[cod]
+tmp/
+
+# InterConnect Studio local work files; keep .syscfg, .hex and simulation source
+*.syscfg.user

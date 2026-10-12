@@ -1,0 +1,15 @@
+/**
+ * @cliArgs --device "TPLD2001" --package "DGS (VSSOP, 20)" --product "TPLD@1.8.0+1529"
+ * @versions {"tool":"1.28.0+4713"}
+ */
+
+const PIN = scripting.addModule("/ti/tpld/PIN", {}, false);
+const input = PIN.addInstance();
+input.$name = "PA1_input";
+input.hw.$assign = "IO11";
+const output = PIN.addInstance();
+output.$name = "PA0_output";
+output.type = "DOUT";
+output.hw.$assign = "IO12";
+scripting.connect(output, "IN", input, "OUT");
+const SYSTEM = scripting.addModule("/ti/tpld/SYSTEM", {}, false);
